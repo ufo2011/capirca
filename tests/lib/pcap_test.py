@@ -13,20 +13,15 @@
 # limitations under the License.
 """Unittest for pcap rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import pcap
 from capirca.lib import policy
-import mock
 
 
 GOOD_HEADER = """
@@ -251,6 +246,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -271,10 +267,10 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class PcapFilter(unittest.TestCase):
+class PcapFilter(absltest.TestCase):
 
   def setUp(self):
-    super(PcapFilter, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testTcp(self):
@@ -348,7 +344,8 @@ class PcapFilter(unittest.TestCase):
 
   @mock.patch.object(pcap.logging, 'info')
   def testExpiringTerm(self, mock_info):
-    exp_date = datetime.date.today() + datetime.timedelta(weeks=EXP_INFO)
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    exp_date = current_date + datetime.timedelta(weeks=EXP_INFO)
     pcap.PcapFilter(policy.ParsePolicy(
         GOOD_HEADER + EXPIRING_TERM % exp_date.strftime('%Y-%m-%d'),
         self.naming), EXP_INFO)
@@ -450,4 +447,4 @@ class PcapFilter(unittest.TestCase):
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

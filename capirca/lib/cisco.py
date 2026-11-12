@@ -15,11 +15,6 @@
 
 """Cisco generator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import ipaddress
 from typing import cast, Union
@@ -28,7 +23,6 @@ from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 from capirca.lib import summarizer
-from six.moves import range
 
 
 _ACTION_TABLE = {
@@ -67,7 +61,35 @@ class ExtendedACLTermError(Error):
   """Raised when there is a problem in an extended access list."""
 
 
-class TermStandard(object):
+class Sequence:
+  """A sequence number tracker."""
+
+  def __init__(self, enable_sequence_numbers):
+    self._number = 10
+    self._enable_sequence_numbers = enable_sequence_numbers
+
+  def NextPrefix(self, is_ipv6, indent=True):
+    """Returns the next sequence prefix or an empty string if none is needed.
+
+    Args:
+      is_ipv6: bool, True if the ACL is IPv6.
+      indent: bool, True if the output should be indented.
+
+    Returns:
+      A string containing the sequence prefix.
+    """
+    if not self._enable_sequence_numbers:
+      return ''
+    indentation = ' ' if indent else ''
+    if is_ipv6:
+      ret = f'{indentation}sequence {self._number}'
+    else:
+      ret = f'{indentation}{self._number}'
+    self._number += 10
+    return ret
+
+
+class TermStandard:
   """A single standard ACL Term."""
 
   def __init__(self, term, filter_name, platform='cisco', verbose=True):
@@ -78,6 +100,7 @@ class TermStandard(object):
     self.logstring = ''
     self.dscpstring = ''
     self.verbose = verbose
+    self.sequencer = Sequence(enable_sequence_numbers=False)
     # sanity checking for standard acls
     if self.term.protocol:
       raise StandardAclTermError(
@@ -127,7 +150,7 @@ class TermStandard(object):
       for next_verbatim in self.term.verbatim:
         if next_verbatim[0] == self.platform:
           ret_str.append(str(next_verbatim[1]))
-        return '\n'.join(ret_str)
+      return '\n'.join(ret_str)
 
     v4_addresses = [x for x in self.term.address if
                     not isinstance(x, nacaddr.IPv6)]
@@ -166,21 +189,24 @@ class TermStandard(object):
                                                      self.dscpstring))
     else:
       if self.verbose:
-        ret_str.append(' remark ' + self.term.name)
+        seq_prefix = self.sequencer.NextPrefix(is_ipv6=False)
+        ret_str.append('%s remark %s' % (seq_prefix, self.term.name))
         comments = aclgenerator.WrapWords(self.term.comment,
                                           _COMMENT_MAX_WIDTH)
         if comments and comments[0]:
           for comment in comments:
-            ret_str.append(' remark ' + str(comment))
+            seq_prefix = self.sequencer.NextPrefix(is_ipv6=False)
+            ret_str.append('%s remark %s' % (seq_prefix, comment))
 
       action = _ACTION_TABLE.get(str(self.term.action[0]))
       if v4_addresses:
         for addr in v4_addresses:
+          seq_prefix = self.sequencer.NextPrefix(is_ipv6=False)
           if addr.prefixlen == 32:
-            ret_str.append(' %s host %s%s%s' % (action,
-                                                addr.network_address,
-                                                self.logstring,
-                                                self.dscpstring))
+            ret_str.append('%s %s host %s%s%s' % (seq_prefix, action,
+                                                  addr.network_address,
+                                                  self.logstring,
+                                                  self.dscpstring))
           elif self.platform == 'arista':
             ret_str.append(' %s %s/%s%s%s' % (action,
                                               addr.network_address,
@@ -188,21 +214,22 @@ class TermStandard(object):
                                               self.logstring,
                                               self.dscpstring))
           else:
-            ret_str.append(' %s %s %s%s%s' % (action,
-                                              addr.network_address,
-                                              addr.hostmask,
-                                              self.logstring,
-                                              self.dscpstring))
+            ret_str.append('%s %s %s %s%s%s' % (seq_prefix, action,
+                                                addr.network_address,
+                                                addr.hostmask,
+                                                self.logstring,
+                                                self.dscpstring))
       else:
-        ret_str.append(' %s %s%s%s' % (action,
-                                       'any',
-                                       self.logstring,
-                                       self.dscpstring))
+        seq_prefix = self.sequencer.NextPrefix(is_ipv6=False)
+        ret_str.append('%s %s %s%s%s' % (seq_prefix, action,
+                                         'any',
+                                         self.logstring,
+                                         self.dscpstring))
 
     return '\n'.join(ret_str)
 
 
-class ObjectGroup(object):
+class ObjectGroup:
   """Used for printing out the object group definitions.
 
   since the ports don't store the token name information, we have
@@ -223,9 +250,10 @@ class ObjectGroup(object):
     exit
   """
 
-  def __init__(self):
+  def __init__(self, af=4):
     self.filter_name = ''
     self.terms = []
+    self.af = af
 
   @property
   def valid(self):
@@ -253,22 +281,20 @@ class ObjectGroup(object):
 
       # Create network object-groups
       addr_type = ('source_address', 'destination_address')
-      addr_family = (4, 6)
 
       for source_or_dest in addr_type:
-        for family in addr_family:
-          addrs = term.GetAddressOfVersion(source_or_dest, family)
-          if addrs:
-            net_def_name = addrs[0].parent_token
-            # We have addresses for this family and have not already seen it.
-            if (net_def_name, family) not in netgroups:
-              netgroups.add((net_def_name, family))
-              ret_str.append('object-group network ipv%d %s' % (
-                  family, net_def_name))
-              for addr in addrs:
-                ret_str.append(' %s/%s' % (addr.network_address,
-                                           addr.prefixlen))
-              ret_str.append('exit\n')
+        addrs = term.GetAddressOfVersion(source_or_dest, self.af)
+        if addrs:
+          net_def_name = addrs[0].parent_token
+          # We have addresses for this family and have not already seen it.
+          if (net_def_name, self.af) not in netgroups:
+            netgroups.add((net_def_name, self.af))
+            ret_str.append('object-group network ipv%d %s' % (
+                self.af, net_def_name))
+            for addr in addrs:
+              ret_str.append(' %s/%s' % (addr.network_address,
+                                         addr.prefixlen))
+            ret_str.append('exit\n')
 
       # Create port object-groups
       for port in term.source_port + term.destination_port:
@@ -287,7 +313,7 @@ class ObjectGroup(object):
     return '\n'.join(ret_str)
 
 
-class PortMap(object):
+class PortMap:
   """Map port numbers to service names."""
   # Define port mappings common to all protocols
   _PORTS_TCP = {
@@ -447,6 +473,271 @@ class PortMap(object):
     except KeyError:
       return port_num
 
+
+class IOSXEMap:
+  """Map protocol numbers, port numbers and ICMP types/codes to names.
+
+  IOS-XE has specific sets of protocols, ports, ICMP types and codes that it
+  represents with specific names in the running-config. The rest is represented
+  with numbers.
+  """
+
+  # Protocol names for IPv4 and IPv6.
+  # This is a complete list of strings that can be used to specify protocols by
+  # name. If a protocol is specified by one of these numbers, the number ends up
+  # in the running-config automatically replaced by IOS-XE with the
+  # corresponding name.
+  # The string values are taken from IOS-XE CLI (the list of available options
+  # when configuring an ACL). They slightly differ from
+  # https://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
+  _PROTO_NAMES: dict[int, dict[int, str]] = {
+      # IPv4 protocols.
+      4: {
+          1: 'icmp',
+          2: 'igmp',
+          6: 'tcp',
+          17: 'udp',
+          47: 'gre',
+          50: 'esp',
+          51: 'ahp',
+          88: 'eigrp',
+          89: 'ospf',
+          94: 'nos',
+          103: 'pim',
+          108: 'pcp',
+      },
+      # IPv6 protocols.
+      6: {
+          0: 'hbh',
+          6: 'tcp',
+          17: 'udp',
+          50: 'esp',
+          51: 'ahp',
+          58: 'icmp',
+          108: 'pcp',
+          132: 'sctp',
+      }
+  }
+  # Service names for TCP and UDP port numbers.
+  # This is a complete list of strings that can be used to specify service names
+  # by name. If a service name is specified by one of these numbers, the number
+  # ends up in the running-config automatically replaced by IOS-XE with the
+  # corresponding name.
+  # The string values are taken from IOS-XE CLI (the list of available options
+  # when configuring an ACL). They slightly differ from
+  # https://www.iana.org/assignments/service-names-port-numbers/service-names-port-numbers.xhtml
+  _PORT_NAMES: dict[str, dict[int, str]] = {
+      'tcp': {
+          179: 'bgp',
+          19: 'chargen',
+          514: 'cmd',
+          13: 'daytime',
+          9: 'discard',
+          53: 'domain',
+          7: 'echo',
+          512: 'exec',
+          79: 'finger',
+          21: 'ftp',
+          20: 'ftp-data',
+          70: 'gopher',
+          101: 'hostname',
+          113: 'ident',
+          194: 'irc',
+          543: 'klogin',
+          544: 'kshell',
+          513: 'login',
+          515: 'lpd',
+          135: 'msrpc',
+          119: 'nntp',
+          15001: 'onep-plain',
+          15002: 'onep-tls',
+          496: 'pim-auto-rp',
+          109: 'pop2',
+          110: 'pop3',
+          25: 'smtp',
+          111: 'sunrpc',
+          49: 'tacacs',
+          517: 'talk',
+          23: 'telnet',
+          37: 'time',
+          540: 'uucp',
+          43: 'whois',
+          80: 'www',
+      },
+      'udp': {
+          512: 'biff',
+          68: 'bootpc',
+          67: 'bootps',
+          9: 'discard',
+          195: 'dnsix',
+          53: 'domain',
+          7: 'echo',
+          500: 'isakmp',
+          434: 'mobile-ip',
+          42: 'nameserver',
+          138: 'netbios-dgm',
+          137: 'netbios-ns',
+          139: 'netbios-ss',
+          4500: 'non500-isakmp',
+          123: 'ntp',
+          496: 'pim-auto-rp',
+          520: 'rip',
+          521: 'ripv6',
+          161: 'snmp',
+          162: 'snmptrap',
+          111: 'sunrpc',
+          514: 'syslog',
+          49: 'tacacs',
+          517: 'talk',
+          69: 'tftp',
+          37: 'time',
+          513: 'who',
+          177: 'xdmcp',
+      }
+  }
+  # ICMP and ICMPv6 type/code names.
+  # This is a complete list of strings that can be used to specify ICMP types
+  # and type+code combinations by name. If an ICMP type or a type+code
+  # combination is specified by one of these numbers (or a pair of numbers),
+  # the number(s) end(s) up in the running-config automatically replaced by
+  # IOS-XE with the corresponding name.
+  # An ICMP type can be accompanied by an additional code, or not, depending on
+  # the type.
+  # Example: "permit icmp any any 3" becomes "permit icmp any any unreachable",
+  # "permit icmp any any 3 0" becomes "permit icmp any any net-unreachable".
+  # The string values are taken from IOS-XE CLI (the list of available options
+  # when configuring an ACL). Not all codes and types from
+  # https://www.iana.org/assignments/icmp-parameters/icmp-parameters.xhtml and
+  # https://www.iana.org/assignments/icmpv6-parameters/icmpv6-parameters.xhtml
+  # have corresponding names in IOS-XE.
+  _ICMP_TYPE_CODE_NAMES: dict[int, dict[tuple[str, str], str]] = {
+      # ICMP (IPv4)
+      4: {
+          ('0', ''): 'echo-reply',
+          ('3', ''): 'unreachable',
+          ('3', '0'): 'net-unreachable',
+          ('3', '1'): 'host-unreachable',
+          ('3', '2'): 'protocol-unreachable',
+          ('3', '3'): 'port-unreachable',
+          ('3', '4'): 'packet-too-big',
+          ('3', '5'): 'source-route-failed',
+          ('3', '6'): 'network-unknown',
+          ('3', '7'): 'host-unknown',
+          ('3', '8'): 'host-isolated',
+          ('3', '9'): 'dod-net-prohibited',
+          ('3', '10'): 'dod-host-prohibited',
+          ('3', '11'): 'net-tos-unreachable',
+          ('3', '12'): 'host-tos-unreachable',
+          ('3', '13'): 'administratively-prohibited',
+          ('3', '14'): 'host-precedence-unreachable',
+          ('3', '15'): 'precedence-unreachable',
+          ('4', ''): 'source-quench',
+          ('5', ''): 'redirect',
+          ('5', '0'): 'net-redirect',
+          ('5', '1'): 'host-redirect',
+          ('5', '2'): 'net-tos-redirect',
+          ('5', '3'): 'host-tos-redirect',
+          ('6', ''): 'alternate-address',
+          ('8', ''): 'echo',
+          ('9', ''): 'router-advertisement',
+          ('10', ''): 'router-solicitation',
+          ('11', ''): 'time-exceeded',
+          ('11', '0'): 'ttl-exceeded',
+          ('11', '1'): 'reassembly-timeout',
+          ('12', ''): 'parameter-problem',
+          ('12', '0'): 'general-parameter-problem',
+          ('12', '1'): 'option-missing',
+          ('12', '2'): 'no-room-for-option',
+          ('13', ''): 'timestamp-request',
+          ('14', ''): 'timestamp-reply',
+          ('15', ''): 'information-request',
+          ('16', ''): 'information-reply',
+          ('17', ''): 'mask-request',
+          ('18', ''): 'mask-reply',
+          ('30', ''): 'traceroute',
+          ('31', ''): 'conversion-error',
+          ('32', ''): 'mobile-redirect',
+      },
+      # ICMPv6
+      6: {
+          ('1', ''): 'unreachable',
+          ('2', ''): 'packet-too-big',
+          ('3', ''): 'time-exceeded',
+          ('4', ''): 'parameter-problem',
+          ('128', ''): 'echo-request',
+          ('129', ''): 'echo-reply',
+          ('130', ''): 'mld-query',
+          ('131', ''): 'mld-report',
+          ('132', ''): 'mld-reduction',
+          ('133', ''): 'router-solicitation',
+          ('134', ''): 'router-advertisement',
+          ('135', ''): 'nd-ns',
+          ('136', ''): 'nd-na',
+          ('137', ''): 'redirect',
+          ('138', ''): 'router-renumbering',
+          ('143', ''): 'mld-v2-report',
+          ('144', ''): 'dhaad-request',
+          ('145', ''): 'dhaad-reply',
+          ('146', ''): 'mpd-solicitation',
+          ('147', ''): 'mpd-advertisement',
+      }
+  }
+
+  @staticmethod
+  def GetProtocolName(proto, af: int):
+    """Converts a protocol number to a name or returns the unchanged value.
+
+    Args:
+      proto: string or int representing proto (tcp, udp, 50, etc).
+      af: integer representing the address family (4 or 6).
+
+    Returns:
+      A name of the protocol or the unchanged provided value.
+    """
+    try:
+      proto_name = IOSXEMap._PROTO_NAMES[af][proto]
+      return proto_name
+    except KeyError:
+      return proto
+
+  @staticmethod
+  def GetPortName(port, proto: str):
+    """Converts a port number to a name or returns the unchanged value.
+
+    Args:
+      port: integer representing the port number.
+      proto: string representing the proto (tcp, udp).
+
+    Returns:
+      A name of the port or the unchanged provided value.
+    """
+    try:
+      port_name = IOSXEMap._PORT_NAMES[proto][port]
+      return port_name
+    except KeyError:
+      return port
+
+  @staticmethod
+  def GetIcmpTypeCodeName(icmp_type: str, icmp_code: str, af: int):
+    """Converts an ICMP type/code numbers to a name or returns the unchanged values.
+
+    Args:
+      icmp_type: string representing the ICMP type.
+      icmp_code: string representing the ICMP code.
+      af: integer representing the address family (4 or 6).
+
+    Returns:
+      A name of the ICMP type/code or the unchanged provided values.
+    """
+    try:
+      icmp_type_code_name = IOSXEMap._ICMP_TYPE_CODE_NAMES[af][
+          (icmp_type, icmp_code)
+      ]
+      return [icmp_type_code_name]
+    except KeyError:
+      return [icmp_type, icmp_code]
+
+
 class Term(aclgenerator.Term):
   """A single ACL Term."""
   ALLOWED_PROTO_STRINGS = ['eigrp', 'gre', 'icmp', 'igmp', 'igrp', 'ip',
@@ -458,7 +749,7 @@ class Term(aclgenerator.Term):
 
   def __init__(self, term, af=4, proto_int=True, enable_dsmo=False,
                term_remark=True, platform='cisco', verbose=True):
-    super(Term, self).__init__(term)
+    super().__init__(term)
     self.term = term
     self.proto_int = proto_int
     self.options = []
@@ -466,6 +757,8 @@ class Term(aclgenerator.Term):
     self.term_remark = term_remark
     self.platform = platform
     self.verbose = verbose
+    self.sequencer = Sequence(enable_sequence_numbers=False)
+    self.configure_replace_compatible = False
     # Our caller should have already verified the address family.
     assert af in (4, 6)
     self.af = af
@@ -473,6 +766,8 @@ class Term(aclgenerator.Term):
       self.text_af = 'inet'
     else:
       self.text_af = 'inet6'
+    self.ALLOWED_PROTO_STRINGS.extend([self.PROTO_MAP.get(x)  # pyrefly: ignore[bad-argument-type]
+                                       for x in self.ALWAYS_PROTO_NUM])
 
   def __str__(self):
     # Verify platform specific terms. Skip whole term if platform does not
@@ -495,13 +790,17 @@ class Term(aclgenerator.Term):
           af=self.text_af))
       return ''
     if self.verbose:
+      seq_prefix = self.sequencer.NextPrefix(is_ipv6=self.af == 6)
       if self.term_remark:
-        ret_str.append(' remark ' + self.term.name)
+        ret_str.append('%s remark %s' % (seq_prefix, self.term.name))
       if self.term.owner:
         self.term.comment.append('Owner: %s' % self.term.owner)
       for comment in self.term.comment:
         for line in comment.split('\n'):
-          ret_str.append(' remark ' + str(line)[:100].rstrip())
+          seq_prefix = self.sequencer.NextPrefix(is_ipv6=self.af == 6)
+          ret_str.append(
+              '%s remark %s' % (seq_prefix, str(line)[:100].rstrip())
+          )
 
     # Term verbatim output - this will skip over normal term creation
     # code by returning early.  Warnings provided in policy.py.
@@ -509,7 +808,7 @@ class Term(aclgenerator.Term):
       for next_verbatim in self.term.verbatim:
         if next_verbatim[0] == self.platform:
           ret_str.append(str(next_verbatim[1]))
-        return '\n'.join(ret_str)
+      return '\n'.join(ret_str)
 
     # protocol
     if not self.term.protocol:
@@ -577,29 +876,41 @@ class Term(aclgenerator.Term):
 
     # options
     opts = [str(x) for x in self.term.option]
-    if ((self.PROTO_MAP['tcp'] in protocol or 'tcp' in protocol)
-        and ('tcp-established' in opts or 'established' in opts)):
+    if (self.PROTO_MAP['tcp'] in protocol or 'tcp' in protocol) and (
+        'tcp-established' in opts or 'established' in opts
+    ):
       if 'established' not in self.options:
         self.options.append('established')
     # Using both 'fragments' and 'is-fragment', ref Github Issue #187
-    if ('ip' in protocol) and (('fragments' in opts) or
-      ('is-fragment' in opts)):
+    if ('ip' in protocol) and (
+        ('fragments' in opts) or ('is-fragment' in opts)
+    ):
       if 'fragments' not in self.options:
         self.options.append('fragments')
     # ACL-based Forwarding
-    if (self.platform == 'ciscoxr'
-       ) and not self.term.action and self.term.next_ip and (
-           'nexthop1' not in opts):
+    if (
+        (self.platform == 'ciscoxr')
+        and not self.term.action
+        and self.term.next_ip
+        and ('nexthop1' not in opts)
+    ):
       if len(self.term.next_ip) > 1:
-        raise CiscoNextIpError('The following term has more than one next IP '
-                               'value: %s' % self.term.name)
-      if (not isinstance(self.term.next_ip[0], nacaddr.IPv4) and
-          not isinstance(self.term.next_ip[0], nacaddr.IPv6)):
-        raise CiscoNextIpError('Next IP value must be an IP address. '
-                               'Invalid term: %s' % self.term.name)
+        raise CiscoNextIpError(
+            'The following term has more than one next IP value: %s'
+            % self.term.name
+        )
+      if not isinstance(self.term.next_ip[0], nacaddr.IPv4) and not isinstance(
+          self.term.next_ip[0], nacaddr.IPv6
+      ):
+        raise CiscoNextIpError(
+            'Next IP value must be an IP address. Invalid term: %s'
+            % self.term.name
+        )
       if self.term.next_ip[0].num_addresses > 1:
-        raise CiscoNextIpError('The following term has a subnet instead of a '
-                               'host: %s' % self.term.name)
+        raise CiscoNextIpError(
+            'The following term has a subnet instead of a host: %s'
+            % self.term.name
+        )
       nexthop = self.term.next_ip[0].network_address
       nexthop_protocol = 'ipv4' if nexthop.version == 4 else 'ipv6'
       self.options.append('nexthop1 %s %s' % (nexthop_protocol, nexthop))
@@ -629,6 +940,13 @@ class Term(aclgenerator.Term):
       else:
         self.options.append('dscp %s' % ' '.join(self.term.dscp_match))
 
+    if self.term.fragment_offset:
+      fragment_operator = 'range' if '-' in self.term.fragment_offset else 'eq'
+      fragment_argument = self.term.fragment_offset.replace('-', ' ')
+      self.options.append(
+          'fragment-offset %s %s' % (fragment_operator, fragment_argument)
+      )
+
     # icmp-types
     icmp_types = ['']
     if self.term.icmp_type:
@@ -648,13 +966,29 @@ class Term(aclgenerator.Term):
           for dport in destination_port:
             for proto in protocol:
               opts = fixed_opts[proto]
+              # cisconx uses icmp for both ipv4 and ipv6
+              if self.platform == 'cisconx':
+                if self.af == 6:
+                  proto = 'icmp' if proto == 'icmpv6' else proto
               for icmp_type in icmp_types:
                 for icmp_code in icmp_codes:
+                  sequence = self.sequencer.NextPrefix(
+                      is_ipv6=self.af == 6, indent=False
+                  )
                   ret_str.extend(
-                      self._TermletToStr(action, proto, saddr,
-                                         self._FormatPort(sport, proto), daddr,
-                                         self._FormatPort(dport, proto),
-                                         icmp_type, icmp_code, opts))
+                      self._TermletToStr(
+                          sequence,
+                          action,  # pyrefly: ignore[unbound-name]
+                          self._FormatProto(proto, self.af),
+                          saddr,
+                          self._FormatPort(sport, proto),
+                          daddr,
+                          self._FormatPort(dport, proto),
+                          icmp_type,
+                          icmp_code,
+                          opts,
+                      )
+                  )
 
     return '\n'.join(ret_str)
 
@@ -678,7 +1012,11 @@ class Term(aclgenerator.Term):
                                                     ipaddress.IPv6Network):
       addr = cast(self.IPV6_ADDRESS, addr)
       if addr.num_addresses > 1:
+        if self.platform == 'cisco' and self.configure_replace_compatible:
+          return addr.with_prefixlen.upper()
         return addr.with_prefixlen
+      if self.platform == 'cisco' and self.configure_replace_compatible:
+        return f'host {str(addr.network_address).upper()}'
       return 'host %s' % (addr.network_address)
     # DSMO enabled
     if isinstance(addr, summarizer.DSMNet):
@@ -702,10 +1040,41 @@ class Term(aclgenerator.Term):
     if self.platform == 'arista':
       port0 = PortMap.GetProtocol(port0, proto, self.platform)
       port1 = PortMap.GetProtocol(port1, proto, self.platform)
+    elif self.platform == 'cisco' and self.configure_replace_compatible:
+      port0 = IOSXEMap.GetPortName(port0, proto)
+      port1 = IOSXEMap.GetPortName(port1, proto)
 
     if port[0] != port[1]:
       return 'range %s %s' % (port0, port1)
     return 'eq %s' % (port0)
+
+  def _FormatProto(self, proto, af):
+    """Returns a formatted proto string.
+
+    Args:
+      proto: int representing the protocol
+      af: int representing the address family (4 or 6).
+
+    Returns:
+      A string suitable for the ACL.
+    """
+    if self.platform == 'cisco' and self.configure_replace_compatible:
+      return IOSXEMap.GetProtocolName(proto, af)
+    return proto
+
+  def _FormatIcmpTypeCode(self, icmp_type: str, icmp_code: str):
+    """Returns a formatted name string for the ICMP type and code.
+
+    Args:
+      icmp_type: string, the ICMP type.
+      icmp_code: string, the ICMP code.
+
+    Returns:
+      A string suitable for the ACL.
+    """
+    if self.platform == 'cisco' and self.configure_replace_compatible:
+      return IOSXEMap.GetIcmpTypeCodeName(icmp_type, icmp_code, self.af)
+    return [icmp_type, icmp_code]
 
   def _FixOptions(self, proto, option):
     """Returns a set of options suitable for the given protocol.
@@ -727,11 +1096,12 @@ class Term(aclgenerator.Term):
       sane_options.remove('established')
     return sane_options
 
-  def _TermletToStr(self, action, proto, saddr, sport, daddr, dport,
+  def _TermletToStr(self, sequence, action, proto, saddr, sport, daddr, dport,
                     icmp_type, icmp_code, option):
     """Take the various compenents and turn them into a cisco acl line.
 
     Args:
+      sequence: str, sequence number
       action: str, action
       proto: str or int, protocol
       saddr: str, source address
@@ -748,11 +1118,12 @@ class Term(aclgenerator.Term):
     Raises:
       UnsupportedCiscoAccessListError: When unknown icmp-types specified
     """
+    all_elements = [sequence, action, str(proto), saddr, sport, daddr, dport]
     # str(icmp_type) is needed to ensure 0 maps to '0' instead of FALSE
-    icmp_type = str(icmp_type)
-    icmp_code = str(icmp_code)
-    all_elements = [action, str(proto), saddr, sport, daddr, dport, icmp_type,
-                    icmp_code, ' '.join(option)]
+    all_elements.extend(
+        self._FormatIcmpTypeCode(str(icmp_type), str(icmp_code))
+    )
+    all_elements.append(' '.join(option))
     non_empty_elements = [x for x in all_elements if x]
     return [' ' + ' '.join(non_empty_elements)]
 
@@ -794,8 +1165,8 @@ class ObjectGroupTerm(Term):
   # Protocols should be emitted as integers rather than strings.
   _PROTO_INT = True
 
-  def __init__(self, term, filter_name, platform='cisco', verbose=True):
-    super(ObjectGroupTerm, self).__init__(term)
+  def __init__(self, term, filter_name, af=4, platform='cisco', verbose=True):
+    super().__init__(term, af=af)
     self.term = term
     self.filter_name = filter_name
     self.platform = platform
@@ -810,6 +1181,19 @@ class ObjectGroupTerm(Term):
     if self.term.platform_exclude:
       if self.platform in self.term.platform_exclude:
         return ''
+
+    # Don't render icmpv6 protocol terms under inet, or icmp under inet6
+    if (self.af == 6 and 'icmp' in self.term.protocol) or (
+        self.af == 4 and 'icmpv6' in self.term.protocol
+    ):
+      logging.debug(
+          self.NO_AF_LOG_PROTO.substitute(
+              term=self.term.name,
+              proto=', '.join(self.term.protocol),
+              af=self.text_af,
+          )
+      )
+      return ''
 
     source_address_set = set()
     destination_address_set = set()
@@ -828,11 +1212,16 @@ class ObjectGroupTerm(Term):
       for next_verbatim in self.term.verbatim:
         if next_verbatim[0] == self.platform:
           ret_str.append(str(next_verbatim[1]))
-        return '\n'.join(ret_str)
+      return '\n'.join(ret_str)
 
     # protocol
     if not self.term.protocol:
-      protocol = ['ip']
+      if self.af == 6:
+        protocol = ['ipv6']
+      elif self.platform == 'ciscoxr':
+        protocol = ['ipv4']
+      else:
+        protocol = ['ip']
 
     else:
       protocol = [proto if proto in self.ALLOWED_PROTO_STRINGS
@@ -867,7 +1256,7 @@ class ObjectGroupTerm(Term):
 
     return '\n'.join(ret_str)
 
-  def _TermletToStr(self, action, proto, saddr, sport, daddr, dport):
+  def _TermletToStr(self, action, proto, saddr, sport, daddr, dport):  # pyrefly: ignore[bad-override]
     """Output a portion of a cisco term/filter only, based on the 5-tuple."""
     # Empty addr/port destinations should emit 'any'
     if saddr and saddr != 'any':
@@ -904,9 +1293,10 @@ class Cisco(aclgenerator.ACLGenerator):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(Cisco, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
     supported_tokens |= {'address',
+                         'restrict_address_family',
                          'dscp_match',
                          'icmp_code',
                          'logging',
@@ -922,19 +1312,30 @@ class Cisco(aclgenerator.ACLGenerator):
                                             'reject-with-tcp-rst'}})
     return supported_tokens, supported_sub_tokens
 
+  def _IsConfigureReplaceCompatible(self, filter_options):
+    if filter_options is not None:
+      if 'configure_replace_compatible' in filter_options:
+        return True
+    return False
+
+  def _IsEnableSequenceNumbers(self, filter_options) -> bool:
+    return (
+        filter_options is not None
+        and 'enable_sequence_numbers' in filter_options
+    )
+
   def _TranslatePolicy(self, pol, exp_info):
     self.cisco_policies = []
-    current_date = datetime.datetime.utcnow().date()
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
     exp_info_date = current_date + datetime.timedelta(weeks=exp_info)
 
     # a mixed filter outputs both ipv4 and ipv6 acls in the same output file
-    good_filters = ['extended', 'standard', 'object-group', 'inet6',
-                    'mixed', 'enable_dsmo']
+    good_filters = ['extended', 'standard', 'object-group',
+                    'object-group-inet6', 'inet6', 'mixed', 'enable_dsmo']
 
     for header, terms in pol.filters:
       if self._PLATFORM not in header.platforms:
         continue
-      obj_target = ObjectGroup()
 
       filter_options = header.FilterOptions(self._PLATFORM)
       filter_name = header.FilterName(self._PLATFORM)
@@ -943,6 +1344,11 @@ class Cisco(aclgenerator.ACLGenerator):
       if 'noverbose' in filter_options:
         filter_options.remove('noverbose')
         self.verbose = False
+
+      self.remove_duplicate_network_objectgroups = False
+      if 'remove_duplicate_network_objectgroups' in filter_options:
+        filter_options.remove('remove_duplicate_network_objectgroups')
+        self.remove_duplicate_network_objectgroups = True
 
       # extended is the most common filter type.
       filter_type = 'extended'
@@ -954,6 +1360,11 @@ class Cisco(aclgenerator.ACLGenerator):
         raise UnsupportedCiscoAccessListError(
             'access list type %s not supported by %s (good types: %s)' % (
                 filter_type, self._PLATFORM, str(good_filters)))
+
+      if filter_type == 'object-group-inet6':
+        obj_target = ObjectGroup(af=6)
+      else:
+        obj_target = ObjectGroup()
 
       filter_list = [filter_type]
       if filter_type == 'mixed':
@@ -991,80 +1402,335 @@ class Cisco(aclgenerator.ACLGenerator):
           if not term:
             continue
 
+          # Ignore if the term is for a different AF
+          if (
+              term.restrict_address_family
+              and term.restrict_address_family != af
+          ):
+            continue
+
           if term.expiration:
             if term.expiration <= exp_info_date:
-              logging.info('INFO: Term %s in policy %s expires '
-                           'in less than two weeks.', term.name, filter_name)
+              logging.info(
+                  'INFO: Term %s in policy %s expires in less than two weeks.',
+                  term.name,
+                  filter_name,
+              )
             if term.expiration <= current_date:
-              logging.warning('WARNING: Term %s in policy %s is expired and '
-                              'will not be rendered.', term.name, filter_name)
+              logging.warning(
+                  'WARNING: Term %s in policy %s is expired and '
+                  'will not be rendered.',
+                  term.name,
+                  filter_name,
+              )
               continue
 
           # render terms based on filter type
           if next_filter == 'standard':
             # keep track of sequence numbers across terms
-            new_terms.append(TermStandard(term, filter_name, self._PLATFORM,
-                                          self.verbose))
-          elif next_filter == 'extended':
-            enable_dsmo = (len(filter_options) > 2 and
-                           filter_options[2] == 'enable_dsmo')
             new_terms.append(
-                Term(term, proto_int=self._PROTO_INT, enable_dsmo=enable_dsmo,
-                     term_remark=self._TERM_REMARK, platform=self._PLATFORM,
-                     verbose=self.verbose))
+                TermStandard(term, filter_name, self._PLATFORM, self.verbose)
+            )
+          elif next_filter == 'extended':
+            enable_dsmo = (
+                len(filter_options) > 2 and filter_options[2] == 'enable_dsmo'
+            )
+            new_terms.append(
+                Term(
+                    term,
+                    proto_int=self._PROTO_INT,
+                    enable_dsmo=enable_dsmo,
+                    term_remark=self._TERM_REMARK,
+                    platform=self._PLATFORM,
+                    verbose=self.verbose,
+                )
+            )
           elif next_filter == 'object-group':
+            if term.source_address:
+              srcs = term.GetAddressOfVersion('source_address', 4)
+              if not srcs:
+                continue
+            if term.destination_address:
+              dsts = term.GetAddressOfVersion('destination_address', 4)
+              if not dsts:
+                continue
             obj_target.AddTerm(term)
-            new_terms.append(self._GetObjectGroupTerm(term, filter_name,
+            new_terms.append(
+                self._GetObjectGroupTerm(
+                    term, filter_name, verbose=self.verbose
+                )
+            )
+          elif next_filter == 'object-group-inet6':
+            if term.source_address:
+              srcs = term.GetAddressOfVersion('source_address', 6)
+              if not srcs:
+                continue
+            if term.destination_address:
+              dsts = term.GetAddressOfVersion('destination_address', 6)
+              if not dsts:
+                continue
+            obj_target.AddTerm(term)
+            new_terms.append(self._GetObjectGroupTerm(term, filter_name, af=6,
                                                       verbose=self.verbose))
           elif next_filter == 'inet6':
             new_terms.append(
                 Term(
-                    term, 6, proto_int=self._PROTO_INT,
-                    platform=self._PLATFORM, verbose=self.verbose))
+                    term,
+                    6,
+                    proto_int=self._PROTO_INT,
+                    platform=self._PLATFORM,
+                    verbose=self.verbose,
+                )
+            )
 
         # cisco requires different name for the v4 and v6 acls
         if filter_type == 'mixed' and next_filter == 'inet6':
           filter_name = 'ipv6-%s' % filter_name
-        self.cisco_policies.append((header, filter_name, [next_filter],
-                                    new_terms, obj_target))
+        self.cisco_policies.append((
+            header,
+            filter_name,
+            [next_filter],
+            new_terms,
+            obj_target,
+            filter_options,
+        ))
 
-  def _GetObjectGroupTerm(self, term, filter_name, verbose=True):
+  def _GetObjectGroupTerm(self, term, filter_name, af=4, verbose=True):
     """Returns an ObjectGroupTerm object."""
-    return ObjectGroupTerm(term, filter_name, verbose=verbose)
+    return ObjectGroupTerm(term, filter_name, af=af, verbose=verbose)
 
-  def _AppendTargetByFilterType(self, filter_name, filter_type):
-    """Takes in the filter name and type and appends headers.
+  def _remove_duplicate_objects(self, target):
+    """Remove all duplicate object-groups and rename to the first group found.
+
+    Args:
+      target: A string to remove duplicate object-groups from.
+
+    Returns:
+      A string with duplicate object-groups removed.
+    Example:
+    Remove all duplicate object-group and rename to the first group found
+    where the format looks like:
+    object-group network ipv4 firstgroup
+     10.1.1.0/8
+    exit
+    object-group network ipv4 secondgroup
+     10.1.1.0/8
+    exit
+    ipv4 access-list myacl
+     permit tcp net-group firstgroup net-group secondgroup port-group 443-443
+    exit
+    Result:
+    object-group network ipv4 sa_myfirstgroup
+     10.1.1.0/8
+    exit
+    ipv4 access-list myacl
+     permit tcp net-group firstgroup net-group secondgroup port-group 443-443
+    exit
+    """
+    for address_family in ['ipv4', 'ipv6']:
+      duplicate_object_groups = self._get_duplicate_object_groups(
+          target, address_family
+      )
+      target = self._remove_object_groups(
+          target, duplicate_object_groups.keys(), address_family
+      )
+      target = self._replace_object_groups_references(
+          target, duplicate_object_groups, address_family
+      )
+    return target
+
+  def _get_duplicate_object_groups(self, text, address_family):
+    """Parses the given text to extract all object-groups.
+
+    Args:
+      text: A multi-line string with multiple object-groups contained within it.
+      address_family: A string "ipv4" or "ipv6" to remove object-groups of.
+
+    Returns:
+      A dictionary of any duplicate content object-groups with the key of the
+      duplicate name and the value of the first occurrence found name.
+    """
+
+    object_groups = {}
+    duplicate_object_groups = {}
+
+    inside_networkobject = False
+    object_group_name = ''
+    object_group_content = []
+    for line in text.splitlines():
+      if line.startswith('object-group'):
+        fields = line.split()
+        if len(fields) == 4:
+          object_group_type = fields[1]
+          object_group_af = fields[2]
+          object_group_name = fields[3]
+          if (
+              object_group_type == 'network'
+              and object_group_af == address_family
+          ):
+            inside_networkobject = True
+      elif line.startswith('exit') and inside_networkobject:
+        inside_networkobject = False
+        if '\n'.join(object_group_content) in object_groups.keys():
+          duplicate_object_groups[object_group_name] = object_groups[
+              '\n'.join(object_group_content)
+          ]
+        else:
+          object_groups['\n'.join(object_group_content)] = object_group_name
+        object_group_content = []
+      else:
+        if inside_networkobject:
+          object_group_content.append(line)
+    return duplicate_object_groups
+
+  def _remove_object_groups(self, text, objgroups, address_family):
+    """Parses the given text to remove all object-groups asked to be removed.
+
+    Args:
+      text: A multi-line string with multiple object-groups contained within it.
+      objgroups: A set of object-groups to remove.
+      address_family: A string "ipv4" or "ipv6" to remove object-groups of.
+
+    Returns:
+      The original text with the duplicate object-groups removed.
+    """
+
+    inside_networkobject = False
+    skip_line = False
+    return_lines = []
+    for line in text.splitlines():
+      if line.startswith('object-group'):
+        fields = line.split()
+        if len(fields) == 4:
+          object_group_type = fields[1]
+          object_group_af = fields[2]
+          object_group_name = fields[3]
+          if (
+              object_group_type == 'network'
+              and object_group_af == address_family
+          ):
+            inside_networkobject = True
+            if object_group_name in objgroups:
+              skip_line = True
+          else:
+            skip_line = False
+        else:
+          skip_line = False
+      elif line.startswith('exit') and inside_networkobject:
+        inside_networkobject = False
+        if skip_line:
+          skip_line = False
+          continue
+        skip_line = False
+      if skip_line:
+        continue
+      return_lines.append(line)
+    return '\n'.join(return_lines)
+
+  def _replace_object_groups_references(
+      self, text, objgroups, address_family
+  ):
+    """Parses the given text to replace all object-groups in an ACL based on a dictionary.
+
+    Args:
+      text: A multi-line string with ACLs contained within it.
+      objgroups: A dict of object-groups to the key with the value of in
+        references.
+      address_family: A string "ipv4" or "ipv6" to remove object-groups of.
+
+    Returns:
+      The original text with the object-group references changed to those in the
+      dictionary.
+    """
+
+    inside = ''
+    return_lines = []
+    for line in text.splitlines():
+      if line.startswith('ip access-list extended ') or line.startswith(
+          'ipv4 access-list '
+      ):
+        inside = 'ipv4'
+      elif line.startswith('ipv6 access-list ') or line.startswith(
+          'ipv6 access-list '
+      ):
+        inside = 'ipv6'
+      elif line.startswith('exit'):
+        inside = ''
+      elif address_family == inside:
+        fields = line.split()
+        if len(fields) >= 2:
+          for i in range(len(fields) - 1):
+            if fields[i] == 'net-group':
+              if fields[i + 1] in objgroups:
+                fields[i + 1] = objgroups[fields[i + 1]]
+          line = ' ' + ' '.join(fields)
+      return_lines.append(line)
+    return '\n'.join(return_lines)
+
+  def _FilterCmd(self, filter_name, filter_type):
+    """Returns the filter name command.
 
     Args:
       filter_name: Name of the current filter
       filter_type: Type of current filter
 
     Returns:
-      list of strings
+      string
 
     Raises:
       UnsupportedCiscoAccessListError: When unknown filter type is used.
     """
-    target = []
     if filter_type == 'standard':
-      if filter_name.isdigit():
-        target.append('no access-list %s' % filter_name)
-      else:
-        target.append('no ip access-list standard %s' % filter_name)
-        target.append('ip access-list standard %s' % filter_name)
-    elif filter_type == 'extended':
-      target.append('no ip access-list extended %s' % filter_name)
-      target.append('ip access-list extended %s' % filter_name)
-    elif filter_type == 'object-group':
-      target.append('no ip access-list extended %s' % filter_name)
-      target.append('ip access-list extended %s' % filter_name)
-    elif filter_type == 'inet6':
-      target.append('no ipv6 access-list %s' % filter_name)
-      target.append('ipv6 access-list %s' % filter_name)
+      return 'ip access-list standard %s' % filter_name
+    if filter_type == 'extended':
+      return 'ip access-list extended %s' % filter_name
+    if filter_type == 'object-group':
+      return 'ip access-list extended %s' % filter_name
+    if filter_type == 'inet6' or filter_type == 'object-group-inet6':
+      return 'ipv6 access-list %s' % filter_name
+    raise UnsupportedCiscoAccessListError(
+        'access list type %s not supported by %s'
+        % (filter_type, self._PLATFORM)
+    )
+
+  def _AppendTargetByFilterType(
+      self, filter_name, filter_type, configure_replace_compatible):
+    """Takes in the filter name and type and appends headers.
+
+    Args:
+      filter_name: Name of the current filter
+      filter_type: Type of current filter
+      configure_replace_compatible: Bool indicating if the resulting config
+        strings should be compatible with the configure replace command.
+
+    Returns:
+      list of strings
+    """
+    if filter_type == 'standard' and filter_name.isdigit():
+      return ['no access-list %s' % filter_name]
+
+    target = []
+    filter_cmd = self._FilterCmd(filter_name, filter_type)
+    if not configure_replace_compatible:
+      target.append('no %s' % filter_cmd)
+    target.append(filter_cmd)
+    return target
+
+  def _RepositoryTagsHelper(
+      self, target=None, filter_type='', filter_name='', sequencer=None
+      ):
+    if target is None:
+      target = []
+    if sequencer is None:
+      sequencer = Sequence(False)
+    if filter_type == 'standard' and filter_name.isdigit():
+      target.extend(aclgenerator.AddRepositoryTags(
+          'access-list %s remark ' % filter_name, date=False, revision=False))
     else:
-      raise UnsupportedCiscoAccessListError(
-          'access list type %s not supported by %s' % (
-              filter_type, self._PLATFORM))
+      for tag in aclgenerator.AddRepositoryTags(' remark ', date=False,
+                                                revision=False):
+        seq_prefix = sequencer.NextPrefix(is_ipv6=filter_type == 'inet6')
+        target.append('%s%s' % (seq_prefix, tag))
     return target
 
   def __str__(self):
@@ -1073,25 +1739,24 @@ class Cisco(aclgenerator.ACLGenerator):
     # add the p4 tags
     target.extend(aclgenerator.AddRepositoryTags('! '))
 
-    for (header, filter_name, filter_list, terms, obj_target
+    for (header, filter_name, filter_list, terms, obj_target, filter_options
         ) in self.cisco_policies:
+      configure_replace_compatible = self._IsConfigureReplaceCompatible(
+          filter_options)
+      enable_sequence_numbers = self._IsEnableSequenceNumbers(filter_options)
       for filter_type in filter_list:
-        target.extend(self._AppendTargetByFilterType(filter_name, filter_type))
-        if filter_type == 'object-group':
+        sequencer = Sequence(enable_sequence_numbers)
+        target.extend(self._AppendTargetByFilterType(
+            filter_name, filter_type, configure_replace_compatible))
+        if filter_type == 'object-group' or filter_type == 'object-group-inet6':
           obj_target.AddName(filter_name)
 
         # Add the Perforce Id/Date tags, these must come after
         # remove/re-create of the filter, otherwise config mode doesn't
         # know where to place these remarks in the configuration.
         if self.verbose:
-          if filter_type == 'standard' and filter_name.isdigit():
-            target.extend(
-                aclgenerator.AddRepositoryTags(
-                    'access-list %s remark ' % filter_name,
-                    date=False, revision=False))
-          else:
-            target.extend(aclgenerator.AddRepositoryTags(
-                ' remark ', date=False, revision=False))
+          target = self._RepositoryTagsHelper(target, filter_type, filter_name,
+                                              sequencer)
 
           # add a header comment if one exists
 
@@ -1102,10 +1767,15 @@ class Cisco(aclgenerator.ACLGenerator):
                   filter_name.isdigit()):
                 target.append('access-list %s remark %s' % (filter_name, line))
               else:
-                target.append(' remark %s' % line)
+                seq_prefix = sequencer.NextPrefix(
+                    is_ipv6=filter_type == 'inet6'
+                    )
+                target.append('%s remark %s' % (seq_prefix, line))
 
         # now add the terms
         for term in terms:
+          term.sequencer = sequencer
+          term.configure_replace_compatible = configure_replace_compatible
           term_str = str(term)
           if term_str:
             target.append(term_str)
@@ -1114,5 +1784,7 @@ class Cisco(aclgenerator.ACLGenerator):
         target = [str(obj_target)] + target
       # ensure that the header is always first
       target = target_header + target
-      target += ['', 'exit', '']
+      target += ['', ''] if configure_replace_compatible else ['', 'exit', '']
+    if self.remove_duplicate_network_objectgroups:
+      return self._remove_duplicate_objects('\n'.join(target)) + '\n'
     return '\n'.join(target)

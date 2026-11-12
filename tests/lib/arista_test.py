@@ -13,18 +13,13 @@
 # limitations under the License.
 """Tests for arista acl rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from capirca.lib import arista
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
 
 GOOD_HEADER = """
 header {
@@ -143,6 +138,7 @@ SUPPORTED_TOKENS = {
     'platform',
     'platform_exclude',
     'protocol',
+    'restrict_address_family',
     'source_address',
     'source_address_exclude',
     'source_port',
@@ -194,6 +190,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -208,10 +205,10 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class AristaTest(unittest.TestCase):
+class AristaTest(absltest.TestCase):
 
   def setUp(self):
-    super(AristaTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testRemark(self):
@@ -235,6 +232,7 @@ class AristaTest(unittest.TestCase):
     acl = arista.Arista(
         policy.ParsePolicy(GOOD_HEADER + GOOD_TERM, self.naming), EXP_INFO)
     self.assertIn('ip access-list test-filter', str(acl))
+    self.assertIn(' exit', str(acl))
 
   def testESPIsAnInteger(self):
     acl = arista.Arista(
@@ -313,4 +311,4 @@ class AristaTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

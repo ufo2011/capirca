@@ -13,20 +13,14 @@
 # limitations under the License.
 """UnitTest class for nsxv.py."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
-import unittest
+from absl.testing import absltest
+from unittest import mock
 from xml.etree import ElementTree as ET
 
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import nsxv
 from capirca.lib import policy
-
-import mock
 
 
 INET_TERM = """\
@@ -387,6 +381,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -398,10 +393,10 @@ EXP_INFO = 2
 _PLATFORM = 'nsxv'
 
 
-class TermTest(unittest.TestCase):
+class TermTest(absltest.TestCase):
 
   def setUp(self):
-    super(TermTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testInitForinet(self):
@@ -526,7 +521,7 @@ class TermTest(unittest.TestCase):
     translate_pol = nsxv.Nsxv(pol, EXP_INFO)
     nsxv_policies = translate_pol.nsxv_policies
     for (_, filter_name, filter_list, terms) in nsxv_policies:
-      self.assertEqual(filter_name, 'inet')
+      self.assertEqual(filter_name, 'INET_FILTER_NAME')
       self.assertEqual(filter_list, ['inet'])
       self.assertEqual(len(terms), 1)
 
@@ -544,7 +539,7 @@ class TermTest(unittest.TestCase):
     translate_pol = nsxv.Nsxv(pol, EXP_INFO)
     nsxv_policies = translate_pol.nsxv_policies
     for (_, filter_name, filter_list, terms) in nsxv_policies:
-      self.assertEqual(filter_name, 'mixed')
+      self.assertEqual(filter_name, 'MIXED_HEADER_NAME')
       self.assertEqual(filter_list, ['mixed'])
       self.assertEqual(len(terms), 1)
       self.assertIn('10.0.0.0/8', str(terms[0]))
@@ -564,7 +559,7 @@ class TermTest(unittest.TestCase):
     translate_pol = nsxv.Nsxv(pol, EXP_INFO)
     nsxv_policies = translate_pol.nsxv_policies
     for (_, filter_name, filter_list, terms) in nsxv_policies:
-      self.assertEqual(filter_name, 'mixed')
+      self.assertEqual(filter_name, 'MIXED_HEADER_NAME')
       self.assertEqual(filter_list, ['mixed'])
       self.assertEqual(len(terms), 1)
       self.assertIn('2001:4860:4860::8844', str(terms[0]))
@@ -586,7 +581,7 @@ class TermTest(unittest.TestCase):
     translate_pol = nsxv.Nsxv(pol, EXP_INFO)
     nsxv_policies = translate_pol.nsxv_policies
     for (_, filter_name, filter_list, terms) in nsxv_policies:
-      self.assertEqual(filter_name, 'mixed')
+      self.assertEqual(filter_name, 'MIXED_HEADER_NAME')
       self.assertEqual(filter_list, ['mixed'])
       self.assertEqual(len(terms), 1)
       self.assertIn('2001:4860:4860::8844', str(terms[0]))
@@ -609,7 +604,7 @@ class TermTest(unittest.TestCase):
     translate_pol = nsxv.Nsxv(pol, EXP_INFO)
     nsxv_policies = translate_pol.nsxv_policies
     for (_, filter_name, filter_list, terms) in nsxv_policies:
-      self.assertEqual(filter_name, 'inet')
+      self.assertEqual(filter_name, 'INET_FILTER_WITH_ESTABLISHED_NAME')
       self.assertEqual(filter_list, ['inet'])
       self.assertEqual(len(terms), 1)
 
@@ -997,4 +992,4 @@ class TermTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

@@ -14,21 +14,16 @@
 
 """Unittest for Aruba acl rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import logging
 import textwrap
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from capirca.lib import aruba
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
 
 GOOD_HEADER_V4 = """
 header {
@@ -241,10 +236,10 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class ArubaTest(unittest.TestCase):
+class ArubaTest(absltest.TestCase):
 
   def setUp(self):
-    super(ArubaTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testBuildTokens(self):
@@ -265,7 +260,8 @@ class ArubaTest(unittest.TestCase):
 
   @mock.patch.object(logging, 'info')
   def testExpiringTerm(self, mock_info):
-    exp_date = datetime.date.today() + datetime.timedelta(weeks=EXP_INFO)
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    exp_date = current_date + datetime.timedelta(weeks=EXP_INFO)
     aruba.Aruba(policy.ParsePolicy(GOOD_HEADER_V4 + EXPIRING_TERM %
                                    exp_date.strftime('%Y-%m-%d'),
                                    self.naming), EXP_INFO)
@@ -812,4 +808,4 @@ class ArubaTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

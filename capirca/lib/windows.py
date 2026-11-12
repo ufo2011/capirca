@@ -14,11 +14,6 @@
 
 """Generic Windows security policy generator; requires subclassing."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import string
 
@@ -52,7 +47,7 @@ class Term(aclgenerator.Term):
     Raises:
       UnsupportedFilterError: Filter is not supported.
     """
-    super(Term, self).__init__(term)
+    super().__init__(term)
     self.term = term  # term object
     self.filter = filter_name  # actual name of filter
     self.default_action = filter_action
@@ -132,8 +127,11 @@ class Term(aclgenerator.Term):
     # if a srcport or dstport is specified.  Fail if src or dst ports are
     # specified and of the protocols are not exactly one or both of 'tcp'
     # or 'udp'.
-    if ((not set(protocols).issubset(set(['tcp', 'udp']))) and
-        (len(src_ports) > 1 or len(dst_ports) > 1)):
+    if (
+        (not set(protocols).issubset(set(['tcp', 'udp']))) and
+        (src_ports is not None and dst_ports is not None) and
+        (len(src_ports) > 1 or len(dst_ports) > 1)
+    ):
       raise aclgenerator.UnsupportedFilterError('%s %s %s' % (
           '\n', self.term.name,
           'src or dst ports may only be specified with "tcp" and/or "udp".'))
@@ -235,8 +233,7 @@ class WindowsGenerator(aclgenerator.ACLGenerator):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(
-        WindowsGenerator, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
     supported_tokens |= {'option'}
     supported_tokens -= {'verbatim'}

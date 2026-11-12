@@ -15,11 +15,6 @@
 
 """ACL Generator base class."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import copy
 import logging
 import re
@@ -27,8 +22,7 @@ import string
 
 from capirca.lib import policy
 import six
-from six.moves import range
-
+import hashlib
 
 # generic error class
 class Error(Exception):
@@ -71,7 +65,7 @@ class TermNameTooLongError(Error):
   """Raised when term named can not be abbreviated."""
 
 
-class Term(object):
+class Term:
   """Generic framework for a generator Term."""
   ICMP_TYPE = policy.Term.ICMP_TYPE
   # http://www.iana.org/assignments/protocol-numbers/protocol-numbers.xhtml
@@ -95,8 +89,11 @@ class Term(object):
                'icmpv6': 58,
                'ipv6-nonxt': 59,
                'ipv6-opts': 60,
+               'eigrp': 88,
                'ospf': 89,
+               'nos': 94,
                'pim': 103,
+               'ipcomp': 108,
                'vrrp': 112,
                'l2tp': 115,
                'sctp': 132,
@@ -112,8 +109,8 @@ class Term(object):
   #  mapping.
   ALWAYS_PROTO_NUM = ['ipip']
   # provide flipped key/value dicts
-  PROTO_MAP_BY_NUMBER = dict([(v, k) for (k, v) in six.iteritems(PROTO_MAP)])
-  AF_MAP_BY_NUMBER = dict([(v, k) for (k, v) in six.iteritems(AF_MAP)])
+  PROTO_MAP_BY_NUMBER = dict([(v, k) for (k, v) in PROTO_MAP.items()])
+  AF_MAP_BY_NUMBER = dict([(v, k) for (k, v) in AF_MAP.items()])
 
   NO_AF_LOG_ADDR = string.Template('Term $term will not be rendered, as it has'
                                    ' $direction address match specified but no'
@@ -204,7 +201,7 @@ class Term(object):
     return rval
 
 
-class ACLGenerator(object):
+class ACLGenerator:
   """Generates platform specific filters and terms from a policy object.
 
   This class takes a policy object and renders the output into a syntax which
@@ -222,8 +219,10 @@ class ACLGenerator(object):
   # Only warn if these tokens are not implemented by a platform. These are not
   # meant to be overridden in subclasses like supported tokens/sub tokens.
   WARN_IF_UNSUPPORTED = {
+      'restrict_address_family',
       'counter',
       'destination_tag',
+      'filter_term',
       'logging',
       'loss_priority',
       'owner',
@@ -462,7 +461,11 @@ class ACLGenerator(object):
 
     return mod
 
-  def FixTermLength(self, term_name, abbreviate=False, truncate=False):
+  def FixTermLength(self,
+                    term_name,
+                    abbreviate=False,
+                    truncate=False,
+                    override_max_length=None):
     """Return a term name which is equal or shorter than _TERM_MAX_LENGTH.
 
        New term is obtained in two steps. First, if allowed, automatic
@@ -473,6 +476,7 @@ class ACLGenerator(object):
       term_name: Name to abbreviate if necessary.
       abbreviate: Whether to allow abbreviations to shorten the length.
       truncate: Whether to allow truncation to shorten the length.
+      override_max_length: Override the _TERM_MAX_LENGTH to a different value.
     Returns:
        A string based on term_name, that is equal or shorter than
        _TERM_MAX_LENGTH abbreviated and truncated as necessary.
@@ -481,22 +485,41 @@ class ACLGenerator(object):
        to be shorter than _TERM_MAX_LENGTH, or truncation is disabled.
     """
     new_term = term_name
+    if override_max_length is None:
+      override_max_length = self._TERM_MAX_LENGTH
     if abbreviate:
       for word, abbrev in self._ABBREVIATION_TABLE:
-        if len(new_term) <= self._TERM_MAX_LENGTH:
+        if len(new_term) <= override_max_length:
           return new_term
         new_term = re.sub(word, abbrev, new_term)
     if truncate:
-      new_term = new_term[:self._TERM_MAX_LENGTH]
-    if len(new_term) <= self._TERM_MAX_LENGTH:
+      new_term = new_term[:override_max_length]
+    if len(new_term) <= override_max_length:
       return new_term
     raise TermNameTooLongError('Term %s (originally %s) is '
                                'too long. Limit is %d characters (vs. %d) '
                                'and no abbreviations remain or abbreviations '
                                'disabled.' %
                                (new_term, term_name,
-                                self._TERM_MAX_LENGTH,
+                                override_max_length,
                                 len(new_term)))
+
+  def HexDigest(self, name, truncation_length=None):
+    """Return a hexadecimal digest of the name object.
+
+    Args:
+      name: Name to hash.
+      truncation_length: Truncation to shorten the digest length if necessary.
+    Returns:
+      A hexadecimal digest of the input name.
+    Raises:
+      N/A
+    """
+
+    if truncation_length is None:
+      truncation_length = 64
+    name_bytes = name.encode('UTF-8')
+    return hashlib.sha256(name_bytes).hexdigest()[:truncation_length]
 
 
 def ProtocolNameToNumber(protocols, proto_to_num, name_to_num_map):
@@ -521,7 +544,8 @@ def ProtocolNameToNumber(protocols, proto_to_num, name_to_num_map):
   return return_proto
 
 
-def AddRepositoryTags(prefix='', rid=True, date=True, revision=True):
+def AddRepositoryTags(prefix='', rid=True, date=True, revision=True,
+                      wrap=False):
   """Add repository tagging into the output.
 
   Args:
@@ -529,16 +553,18 @@ def AddRepositoryTags(prefix='', rid=True, date=True, revision=True):
     rid: bool; True includes the revision Id: repository tag.
     date: bool; True includes the Date: repository tag.
     revision: bool; True includes the Revision: repository tag.
+    wrap: bool; True wraps the tag in double quotes.
   Returns:
     list of text lines containing revision data
   """
   tags = []
+  wrapper = '"' if wrap else ''
 
   # Format print the '$' into the RCS tags in order prevent the tags from
   # being interpolated here.
-  p4_id = '%sId:%s' % ('$', '$')
-  p4_date = '%sDate:%s' % ('$', '$')
-  p4_revision = '%sRevision:%s' % ('$', '$')
+  p4_id = '%s%sId:%s%s' % (wrapper, '$', '$', wrapper)
+  p4_date = '%s%sDate:%s%s' % (wrapper, '$', '$', wrapper)
+  p4_revision = '%s%sRevision:%s%s' % (wrapper, '$', '$', wrapper)
   if rid:
     tags.append('%s%s' % (prefix, p4_id))
   if date:
@@ -574,3 +600,29 @@ def WrapWords(textlist, size, joiner='\n'):
     # avoid empty comment lines
     rval.extend(x.strip() for x in textlist[index].strip().split(joiner) if x)
   return rval
+
+def TruncateWords(input_text, char_limit):
+  """Shorten text strings to not exceed a specified limit.
+
+  This function also removes any line breaks.
+
+  Args:
+    input_text: list or individual string values.
+    char_limit: size limit of resulting string element.
+
+  Returns:
+    truncated single string element within double quotes.
+  """
+  hard_limit = 126
+  if char_limit > hard_limit:
+    char_limit = hard_limit
+
+  if isinstance(input_text, list):
+    # Handle multiple comments. Newline to space and double to single quotes.
+    sanitized_list = []
+    for i in input_text:
+      sanitized_list.append(i.replace('\n', ' ').replace('\"', '\''))
+    comment = ' '.join(sanitized_list)
+  else:
+    comment = input_text
+  return '"' + comment[:char_limit] + '"'

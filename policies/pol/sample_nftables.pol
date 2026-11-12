@@ -1,0 +1,255 @@
+#
+# This is a WIP example policy for capirca/nftables
+# Policy terms will be added as code evolves to handle them.
+#
+header {
+  comment:: "Noverbose + custom priority policy example"
+  target:: nftables mixed OUTPUT 300 noverbose
+}
+
+term default-accept {
+  comment:: "non-protocol specific allow anything test"
+  action:: accept
+}
+
+header {
+  comment:: "Inbound traffic nftables policy example"
+  target:: nftables inet INPUT
+}
+
+term allow-anything {
+  action:: accept
+}
+
+header {
+  comment:: "2 Inbound traffic nftables policy example"
+  target:: nftables inet INPUT ACCEPT
+}
+
+term allow-anything {
+  action:: accept
+}
+
+header {
+  comment:: "Outbound dual-stack traffic nftables policy example"
+  target:: nftables mixed OUTPUT
+}
+
+term default-deny {
+  action:: deny
+}
+
+term full-tuple-term {
+  source-address:: WEB_SERVERS
+  source-port:: DNS
+  destination-address:: GOOGLE_DNS
+  destination-port:: DNS
+  protocol:: tcp
+  action:: accept
+}
+
+term ssh-deny {
+  protocol:: tcp
+  destination-port:: SSH
+  destination-port:: DNS
+  action:: deny
+}
+
+term source-address-term {
+  source-address:: RFC1918 BOGON RESERVED
+  action:: deny
+}
+
+header {
+  comment:: "Outbound IPv6 traffic nftables policy example"
+  target:: nftables inet6 OUTPUT
+}
+
+term default-deny {
+  action:: deny
+}
+
+header {
+  comment:: "Priority outbound IPv6"
+  target:: nftables inet6 OUTPUT 100
+}
+
+term awesome-term {
+  comment:: "Awesomeness."
+  action:: accept
+}
+
+term multiline-comment-term {
+  comment:: "First line of comment."
+  comment:: "Second line of defense."
+  comment:: "Third base."
+  action:: accept
+}
+
+term awesome-term3 {
+  comment:: "Awesomeness."
+  action:: accept
+}
+
+header {
+  comment:: "This policy expected to test every combination of REQUIRED keywords."
+  target:: nftables inet INPUT
+}
+
+term test-icmp {
+  comment:: "Allow ICMP from company."
+  source-address:: PUBLIC_NAT
+  protocol:: icmp
+  action:: accept
+}
+
+term test-icmp-type-ip4 {
+  comment:: "IPv4 icmp-type test"
+  icmp-type:: echo-request echo-reply
+  protocol:: icmp
+  action:: accept
+}
+
+term test-icmp-type-ip4-reject {
+  comment:: "IPv4 icmp-type - test reject action"
+  icmp-type:: router-advertisement
+  protocol:: icmp
+  action:: reject
+}
+
+term test-icmp-type-ip6 {
+  comment:: "IPv6 icmp-type test"
+  icmp-type:: multicast-listener-done router-solicit router-advertisement
+  protocol:: icmpv6
+  action:: accept
+}
+
+term test-protocol-udp {
+  comment:: "All UDP traffic for both IPv4 and IPv6."
+  protocol:: udp
+  action:: accept
+}
+
+term test-protocol-tcp {
+  comment:: "All UDP traffic for both IPv4 and IPv6."
+  protocol:: tcp
+  action:: accept
+}
+
+term test-conntrack-established {
+  comment:: "only permit established connections"
+  comment:: "implements tcp-established flag if protocol is tcp only"
+  comment:: "otherwise adds 1024-65535 to required destination-ports"
+  destination-address:: INTERNAL
+  protocol:: udp
+  option:: established
+  action:: accept
+}
+
+term test-conntrack-tcp-replies {
+  comment:: "only permit established tcp connections, usually checked based on TCP flag settings."
+  comment:: "If protocol UDP is included in term"
+  comment:: "only adds 1024-65535 to required destination-ports."
+  destination-address:: INTERNAL
+  protocol:: tcp
+  option:: tcp-established
+  action:: accept
+}
+
+term test-port-snmp {
+  comment:: "Test SNMP port 161 UDP - No addresses"
+  protocol:: udp
+  destination-port:: SNMP
+  action:: accept
+}
+
+term test-src-rdp {
+  comment:: "Test source port RDP 3389/tcp - No addresses"
+  protocol:: tcp
+  source-port:: RDP
+  logging:: syslog
+  counter:: somecountername
+  action:: accept
+}
+
+term test-combined-port {
+  comment:: "Test src/dest 80 - No addresses"
+  protocol:: tcp
+  source-port:: HTTP
+  destination-port:: HTTP
+  action:: accept
+}
+
+term high-ports {
+  comment:: "Test tcp + udp high ports - No addresses"
+  protocol:: tcp udp
+  destination-port:: HIGH_PORTS
+  action:: accept
+}
+
+term nftables-platform {
+  comment:: "Term just for nftables platform example"
+  action:: accept
+  platform:: nftables
+}
+
+term different-platform {
+  comment:: "Platform is not for nftables, so this should be not rendered"
+  action:: accept
+  platform:: no_such_platform
+}
+
+term excludeed-platform {
+  comment:: "nftables platform is excluded, so this should be not rendered"
+  action:: accept
+  platform-exclude:: nftables
+}
+
+header {
+  comment:: "Demonstrate use of base chain name option. There will be a new chain with the passed name and a number (instead of 'root'), which will jump into member chains for individual terms."
+  target:: nftables inet6 OUTPUT base-chain-name my-chain
+}
+
+term awesome-term-on-another-chain {
+  comment:: "Awesomeness on another chain."
+  action:: accept
+}
+
+header {
+  comment:: "Demonstrate use of table name option. The table name will be used to create a new nftables table and the policy will be applied to it."
+  target:: nftables inet6 OUTPUT table-name my-table
+}
+
+term awesome-term-on-another-table {
+  comment:: "Awesomeness on another table."
+  action:: accept
+}
+
+header {
+  comment:: "Demonstrate use of as-regular-chain option."
+  target:: nftables inet6 OUTPUT as-regular-chain
+}
+
+term awesome-term-as-regular-chain {
+  comment:: "Awesomeness with a regular chain."
+  action:: accept
+}
+
+header {
+  comment:: "Demonstrate the use of multiple options with arguments at once."
+  target:: nftables inet6 OUTPUT 300 noverbose base-chain-name multipleoptions-chain table-name multipleoptions-table as-regular-chain address-family-override bridge
+}
+
+term awesome-term-with-multiple-options {
+  comment:: "Awesomeness with multiple options at once."
+  action:: accept
+}
+
+header {
+  comment:: "nftables with bridge address family override"
+  target:: nftables mixed INPUT address-family-override bridge
+}
+
+term allow-anything-bridge {
+  action:: accept
+}

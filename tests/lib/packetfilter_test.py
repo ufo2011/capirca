@@ -14,20 +14,15 @@
 
 """Unittest for packetfilter rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import packetfilter
 from capirca.lib import policy
-import mock
 
 
 GOOD_HEADER = """
@@ -309,12 +304,27 @@ term good-warning {
 }
 """
 
+SOURCE_INTERFACE_TERM = """
+term src-intf {
+  source-interface:: lo0
+  action:: accept
+}
+"""
+
+DESTINATION_INTERFACE_TERM = """
+term dest-intf {
+  destination-interface:: lo0
+  action:: accept
+}
+"""
+
 SUPPORTED_TOKENS = {
     'action',
     'comment',
     'destination_address',
     'destination_address_exclude',
     'destination_port',
+    'destination_interface',
     'expiration',
     'icmp_type',
     'stateless_reply',
@@ -327,6 +337,7 @@ SUPPORTED_TOKENS = {
     'source_address',
     'source_address_exclude',
     'source_port',
+    'source_interface',
     'translated',
     'verbatim',
 }
@@ -374,6 +385,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -393,10 +405,10 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class PacketFilterTest(unittest.TestCase):
+class PacketFilterTest(absltest.TestCase):
 
   def setUp(self):
-    super(PacketFilterTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testTcp(self):
@@ -510,7 +522,8 @@ class PacketFilterTest(unittest.TestCase):
 
   @mock.patch.object(packetfilter.logging, 'info')
   def testExpiringTerm(self, mock_info):
-    exp_date = datetime.date.today() + datetime.timedelta(weeks=EXP_INFO)
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    exp_date = current_date + datetime.timedelta(weeks=EXP_INFO)
     packetfilter.PacketFilter(policy.ParsePolicy(
         GOOD_HEADER + EXPIRING_TERM % exp_date.strftime('%Y-%m-%d'),
         self.naming), EXP_INFO)
@@ -652,6 +665,28 @@ class PacketFilterTest(unittest.TestCase):
 
     self.naming.GetNetAddr.assert_called_once_with('PROD_NETWORK')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
+
+  def testDirectionalSourceInterface(self):
+    acl = packetfilter.PacketFilter(policy.ParsePolicy(
+        GOOD_HEADER_DIRECTIONAL + SOURCE_INTERFACE_TERM, self.naming), EXP_INFO)
+    result = str(acl)
+    self.assertIn('# term src-intf', result,
+                  'did not find comment for src-intf')
+    self.assertIn(
+        'pass in quick on lo0 from { any } to { any } flags S/SA keep state',
+        result,
+        'did not find actual term for src-intf')
+
+  def testDirectionalDestinationInterface(self):
+    acl = packetfilter.PacketFilter(policy.ParsePolicy(
+        GOOD_HEADER_DIRECTIONAL + DESTINATION_INTERFACE_TERM, self.naming), EXP_INFO)
+    result = str(acl)
+    self.assertIn('# term dest-intf', result,
+                  'did not find comment for dest-intf')
+    self.assertIn(
+        'pass out quick on lo0 from { any } to { any } flags S/SA keep state',
+        result,
+        'did not find actual term for dest-intf')
 
   def testMultipleHeader(self):
     acl = packetfilter.PacketFilter(policy.ParsePolicy(
@@ -981,4 +1016,4 @@ class PacketFilterTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

@@ -14,22 +14,16 @@
 
 """Unittest for iptables rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import re
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from capirca.lib import aclgenerator
 from capirca.lib import iptables
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
-from six.moves import range
 
 
 GOOD_HEADER_1 = """
@@ -544,6 +538,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -568,15 +563,15 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class FakeTerm(object):
+class FakeTerm:
   name = ''
   protocol = ['tcp']
 
 
-class AclCheckTest(unittest.TestCase):
+class AclCheckTest(absltest.TestCase):
 
   def setUp(self):
-    super(AclCheckTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   @mock.patch.object(iptables.logging, 'warning')
@@ -600,6 +595,46 @@ class AclCheckTest(unittest.TestCase):
     pol = policy.ParsePolicy(BAD_HEADER_3 + GOOD_TERM_1, self.naming)
     self.assertRaises(iptables.UnsupportedTargetOptionError,
                       iptables.Iptables, pol, EXP_INFO)
+
+  def test_mixed_icmp_protocols(self):
+    """Keep same-family ICMP and unrelated protocols in a mixed term."""
+    for family, expected, excluded in (
+        ('inet', '-p icmp ', '-p ipv6-icmp '),
+        ('inet6', '-p ipv6-icmp ', '-p icmp ')):
+      for extra_protocol in ('', ' tcp'):
+        with self.subTest(family=family, extra_protocol=extra_protocol):
+          pol = policy.ParsePolicy('''
+header {
+  target:: iptables INPUT DROP %s
+}
+term mixed-icmp {
+  protocol:: icmp icmpv6%s
+  action:: accept
+}
+''' % (family, extra_protocol), self.naming)
+          acl = iptables.Iptables(pol, EXP_INFO)
+          result = str(acl)
+          self.assertIn(expected, result)
+          self.assertNotIn(excluded, result)
+          if extra_protocol:
+            self.assertIn('-p tcp ', result)
+
+  def test_mixed_icmp_types(self):
+    """Resolve ICMP types using the protocol for the target family."""
+    for family, expected in (
+        ('inet', '--icmp-type 8'), ('inet6', '--icmpv6-type 128')):
+      with self.subTest(family=family):
+        pol = policy.ParsePolicy('''
+header {
+  target:: iptables INPUT DROP %s
+}
+term mixed-icmp {
+  protocol:: icmp icmpv6
+  icmp-type:: echo-request
+  action:: accept
+}
+''' % family, self.naming)
+        self.assertIn(expected, str(iptables.Iptables(pol, EXP_INFO)))
 
   def testGoodPolicy(self):
     acl = iptables.Iptables(policy.ParsePolicy(GOOD_HEADER_2 + GOOD_TERM_1,
@@ -1126,7 +1161,8 @@ class AclCheckTest(unittest.TestCase):
 
   @mock.patch.object(iptables.logging, 'info')
   def testExpiringTerm(self, mock_info):
-    exp_date = datetime.date.today() + datetime.timedelta(weeks=EXP_INFO)
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    exp_date = current_date + datetime.timedelta(weeks=EXP_INFO)
     _ = iptables.Iptables(policy.ParsePolicy(GOOD_HEADER_1 + EXPIRING_TERM %
                                              exp_date.strftime('%Y-%m-%d'),
                                              self.naming), EXP_INFO)
@@ -1252,4 +1288,4 @@ class AclCheckTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

@@ -15,11 +15,6 @@
 
 """Arista generator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 from capirca.lib import cisco
 
 
@@ -45,12 +40,15 @@ class Arista(cisco.Cisco):
   _PROTO_INT = False
 
   # Arista omits the "extended" access-list argument.
-  def _AppendTargetByFilterType(self, filter_name, filter_type):
+  def _AppendTargetByFilterType(
+      self, filter_name, filter_type, configure_replace_compatible=False):
     """Takes in the filter name and type and appends headers.
 
     Args:
       filter_name: Name of the current filter
       filter_type: Type of current filter
+      configure_replace_compatible: Bool indicating if the resulting config
+        strings should be compatible with the configure replace command.
 
     Returns:
       list of strings
@@ -58,6 +56,10 @@ class Arista(cisco.Cisco):
     Raises:
       UnsupportedEosAccessListError: When unknown filter type is used.
     """
+    # `configure_replace_compatible` is included to satisfy the signature
+    # requirements for cisco.Cisco._AppendTargetByFilterType(). This is not
+    # currently required for the arista module.
+    del configure_replace_compatible
     target = []
     if filter_type == 'standard':
       if filter_name.isdigit():
@@ -79,3 +81,16 @@ class Arista(cisco.Cisco):
           'access list type %s not supported by %s' % (
               filter_type, self._PLATFORM))
     return target
+
+  def __str__(self, **kwargs):
+    # Parent Cisco is generating "exit" at the end, which needs to be indentated
+    # for correct Arista syntax parsing.
+    s = super().__str__(**kwargs)
+    lines = s.split('\n')
+    while lines and not lines[-1]:
+      lines = lines[:-1]
+    if lines and lines[-1] == 'exit':
+      lines[-1] = ' exit'
+      lines.append('')
+      return '\n'.join(lines)
+    return s

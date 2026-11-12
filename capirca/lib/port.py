@@ -15,10 +15,6 @@
 
 """Common library for network ports and protocol handling."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
 
 
 class Error(Exception):
@@ -41,7 +37,7 @@ class NotSinglePort(Error):
   """Port range defined instead of a single port."""
 
 
-class PPP(object):
+class PPP:
   """PPP: [P]ort [P]rotocol [P]airs.
 
   Make port/protocol pairs an object for easy comparisons
@@ -83,7 +79,7 @@ class PPP(object):
   @property
   def start(self):
     # return the first port in the range as int
-    if '-' in self.port:
+    if self.port is not None and '-' in self.port:
       self._start = int(self.port.split('-')[0])
     else:
       raise InvalidRange('%s is not a valid port range' % self.port)
@@ -92,7 +88,7 @@ class PPP(object):
   @property
   def end(self):
     # return the last port in the range as int
-    if '-' in self.port:
+    if self.port is not None and '-' in self.port:
       self._end = int(self.port.split('-')[1])
     else:
       raise InvalidRange('%s is not a valid port range' % self.port)
@@ -109,7 +105,7 @@ class PPP(object):
   def __lt__(self, other):
     if self.is_single_port:
       try:
-        return int(self.port) < int(other.port)
+        return int(self.port) < int(other.port)  # pyrefly: ignore[bad-argument-type]
       except:
         return False
     else:
@@ -118,7 +114,7 @@ class PPP(object):
   def __gt__(self, other):
     if self.is_single_port:
       try:
-        return int(self.port) > int(other.port)
+        return int(self.port) > int(other.port)  # pyrefly: ignore[bad-argument-type]
       except:
         return False
     else:
@@ -127,7 +123,7 @@ class PPP(object):
   def __le__(self, other):
     if self.is_single_port:
       try:
-        return int(self.port) <= int(other.port)
+        return int(self.port) <= int(other.port)  # pyrefly: ignore[bad-argument-type]
       except:
         return False
     else:
@@ -136,7 +132,7 @@ class PPP(object):
   def __ge__(self, other):
     if self.is_single_port:
       try:
-        return int(self.port) >= int(other.port)
+        return int(self.port) >= int(other.port)  # pyrefly: ignore[bad-argument-type]
       except:
         return False
     else:
@@ -145,7 +141,7 @@ class PPP(object):
   def __eq__(self, other):
     if self.is_single_port:
       try:
-        return (int(self.port) == int(other.port) and
+        return (int(self.port) == int(other.port) and  # pyrefly: ignore[bad-argument-type]
                 self.protocol == other.protocol)
       except:
         return False

@@ -44,11 +44,6 @@ DNS = 53/tcp
 
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import glob
 import os
 import re
@@ -99,7 +94,7 @@ class NamingSyntaxError(Error):
   """A general syntax error for the definition."""
 
 
-class _ItemUnit(object):
+class _ItemUnit:
   """This class is a container for an index key and a list of associated values.
 
   An ItemUnit will contain the name of either a service or network group,
@@ -115,7 +110,7 @@ class _ItemUnit(object):
     self.items = []
 
 
-class Naming(object):
+class Naming:
   """Object to hold naming objects from NETWORK and SERVICES definition files.
 
   Attributes:
@@ -138,7 +133,7 @@ class Naming(object):
                               re.IGNORECASE | re.DOTALL)
     self.token_re = re.compile(r'(^[-_A-Z0-9]+$)', re.IGNORECASE)
     if naming_file and naming_type:
-      filename = os.path.sep.join([naming_dir, naming_file])
+      filename = os.path.sep.join([naming_dir, naming_file])  # pyrefly: ignore[no-matching-overload]
       with open(filename, 'r') as file_handle:
         self._ParseFile(file_handle, naming_type)
     elif naming_dir:
@@ -174,14 +169,14 @@ class Naming(object):
     # convert string to nacaddr, if arg is ipaddr then convert str() to nacaddr
     if (not isinstance(query, nacaddr.IPv4) and
        not isinstance(query, nacaddr.IPv6)):
-      if query[:1].isdigit():
+      if query[:1].isdigit() or ':' in query:
         query = nacaddr.IP(query)
     # Get parent token for an IP
     if isinstance(query, nacaddr.IPv4) or isinstance(query, nacaddr.IPv6):
       for token in self.networks:
         for item in self.networks[token].items:
           item = item.split('#')[0].strip()
-          if not item[:1].isdigit():
+          if not item[:1].isdigit() and ':' not in item:
             continue
           try:
             supernet = nacaddr.IP(item, strict=False)

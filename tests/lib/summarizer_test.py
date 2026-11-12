@@ -14,26 +14,21 @@
 
 """Tests for discontinuous subnet mask summarizer."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import os
 
 import random
 import time
-import unittest
+from absl.testing import absltest
 
 from absl import logging
 from capirca.lib import nacaddr
 from capirca.lib import summarizer
 
 
-class SummarizerTest(unittest.TestCase):
+class SummarizerTest(absltest.TestCase):
 
   def setUp(self):
-    super(SummarizerTest, self).setUp()
+    super().setUp()
     random_seed = int(time.time())
     value = os.environ.get('TEST_RANDOM_SEED', '')
     try:
@@ -89,6 +84,16 @@ class SummarizerTest(unittest.TestCase):
     random.shuffle(nets)
     result = summarizer.Summarize(nets)
     self.assertEqual(len(result), 256)
+
+  def testDontSummarizeWeirdMasks(self):
+    nets = [
+        # combining these results in a weird netmask, dont do it
+        nacaddr.IPv4('34.144.128.0/19'),
+        nacaddr.IPv4('162.144.128.0/19'),
+    ]
+    result = summarizer.Summarize(nets)
+    self.assertEqual(result, [summarizer.DSMNet(579895296, 4294959104),
+                              summarizer.DSMNet(2727378944, 4294959104)])
 
   def testSummarizeSomeNetworks(self):
     nets = [
@@ -202,4 +207,4 @@ class SummarizerTest(unittest.TestCase):
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

@@ -1,5 +1,9 @@
 name: Docker Publish
 
+permissions:
+      packages: write
+      contents: read
+
 on:
   push:
     branches:
@@ -14,17 +18,17 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v1
+      - uses: actions/checkout@v5
       - name: Log into registry
         run: |
-          echo "${{ secrets.GITHUB_TOKEN }}" | docker login docker.pkg.github.com -u ${{ github.actor }} --password-stdin
+          echo "${{ secrets.GITHUB_TOKEN }}" | docker login ghcr.io -u ${GITHUB_ACTOR} --password-stdin
 
       - name: Build and tag the image
         run: docker build . --tag $IMAGE_NAME
 
       - name: Push the image to the container registry
         run: |
-          IMAGE_ID="docker.pkg.github.com/${{ github.repository }}/$IMAGE_NAME"
+          IMAGE_ID="ghcr.io/${{ github.repository }}/$IMAGE_NAME"
 
           # Change all uppercase to lowercase
           IMAGE_ID=$(echo $IMAGE_ID | tr '[A-Z]' '[a-z]')

@@ -14,18 +14,12 @@
 
 """Discontinuous subnet mask summarizer."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import collections
 
 from capirca.lib import nacaddr
-from six.moves import range
 
 
-class DSMNet(object):
+class DSMNet:
   """Hold IP address information for the purposes of DSM summarization.
 
     ipaddr maintainers explicitly declared that they will not
@@ -125,17 +119,17 @@ def ToDottedQuad(net, negate=False, nondsm=False):
   if net.address.bit_length() > 32:
     raise ValueError('Addresses larger than 32 bits '
                      'are currently not supported.')
+  int32addr = _Int32ToDottedQuad(net.address)
   if net.netmask.bit_length() not in (0, 32):
-    raise ValueError('Subnet masks other than 0 or 32 '
-                     'are currently not supported.')
+    raise ValueError('Only subnet masks of length 0 or 32 are supported, got ('
+                     f'{int32addr}/{_PrefixlenForNonDSM(net.netmask)}).')
   if negate:
     netmask = ~net.netmask
   else:
     netmask = net.netmask
 
-  return (_Int32ToDottedQuad(net.address),
-          _PrefixlenForNonDSM(netmask)) if nondsm else (
-              _Int32ToDottedQuad(net.address), _Int32ToDottedQuad(netmask))
+  return (int32addr, _PrefixlenForNonDSM(netmask)) if nondsm else (
+            int32addr, _Int32ToDottedQuad(netmask))
 
 
 def _PrefixlenForNonDSM(intmask):
@@ -267,11 +261,14 @@ def _SummarizeSameMask(nets):
         # or they are "a pair".
         if (current_net.netmask == pair_net.netmask and
             (xored_address & (xored_address - 1) == 0) and xored_address > 0):
+          new_netmask = current_net.netmask ^ xored_address
+          if new_netmask.bit_length() not in (0, 32):
+            singletons.append(current_net)
+            break
           # if pair was found, remove both, add paired up network
           # to combinetons for next run and move along
           # otherwise this network can never be paired
           current_nets.pop(pair_net_index)
-          new_netmask = current_net.netmask ^ xored_address
           # summarize supplied networks into one using discontinuous
           # subnet mask.
           combinetons.append(DSMNet(min(current_net.address, pair_net.address),

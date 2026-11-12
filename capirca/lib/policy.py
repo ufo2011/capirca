@@ -13,13 +13,7 @@
 # limitations under the License.
 #
 
-"""Parses the generic policy files and return a policy object for acl rendering.
-"""
-
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
+"""Parses the generic policy files and return a policy object for acl rendering."""
 
 import datetime
 import os
@@ -30,21 +24,23 @@ from capirca.lib import nacaddr
 from capirca.lib import naming
 from ply import lex
 from ply import yacc
-from six.moves import map
-from six.moves import range
 
 
 DEFINITIONS = None
 DEFAULT_DEFINITIONS = './def'
-ACTIONS = set(('accept', 'count', 'deny', 'reject', 'next',
-               'reject-with-tcp-rst'))
-_FLEXIBLE_MATCH_RANGE_ATTRIBUTES = {'byte-offset',
-                                    'bit-offset',
-                                    'bit-length',
-                                    'match-start',
-                                    'range',
-                                    'range-except',
-                                    'flexible-range-name'}
+ACTIONS = set(
+    ('accept', 'count', 'deny', 'reject', 'next', 'reject-with-tcp-rst')
+)
+PROTOS_WITH_PORTS = frozenset(('tcp', 'udp', 'udplite', 'sctp'))
+_FLEXIBLE_MATCH_RANGE_ATTRIBUTES = {
+    'byte-offset',
+    'bit-offset',
+    'bit-length',
+    'match-start',
+    'range',
+    'range-except',
+    'flexible-range-name',
+}
 _FLEXIBLE_MATCH_START_OPTIONS = {'layer-3', 'layer-4', 'payload'}
 _LOGGING = set(('true', 'True', 'syslog', 'local', 'disable', 'log-both'))
 _OPTIMIZE = True
@@ -67,6 +63,10 @@ class FileReadError(Error):
 
 class RecursionTooDeepError(Error):
   """Included files exceed maximum recursion depth."""
+
+
+class InvalidIncludeDirectoryError(Error):
+  """Included files are from invalid directories."""
 
 
 class ParseError(Error):
@@ -129,8 +129,18 @@ class InvalidTermTTLValue(Error):
   """Error when TTL value is invalid."""
 
 
+class InvalidTrafficClassValue(Error):
+  """Error when Traffic Class value is invalid."""
+
+
 class MixedPortandNonPortProtos(Error):
-  """Error when TCP or UDP are used with protocols that do not use ports."""
+  """Error when protocols that use ports are mixed with protocols that don't."""
+
+
+def _DEFINITIONS():
+  if DEFINITIONS is None:
+    raise ValueError('definitions object not defined.')
+  return DEFINITIONS
 
 
 def TranslatePorts(ports, protocols, term_name):
@@ -150,12 +160,19 @@ def TranslatePorts(ports, protocols, term_name):
   ret_array = []
   for proto in protocols:
     for port in ports:
-      service_by_proto = DEFINITIONS.GetServiceByProto(port, proto)
+      service_by_proto = _DEFINITIONS().GetServiceByProto(port, proto)
       if not service_by_proto:
-        logging.warning('Term %s has service %s which is not defined with '
-                        'protocol %s, but will be permitted. Unless intended'
-                        ', you should consider splitting the protocols '
-                        'into separate terms!', term_name, port, proto)
+        logging.warning(
+            (
+                'Term %s has service %s which is not defined with '
+                'protocol %s, but will be permitted. Unless intended'
+                ', you should consider splitting the protocols '
+                'into separate terms!'
+            ),
+            term_name,
+            port,
+            proto,
+        )
 
       for p in [x.split('-') for x in service_by_proto]:
         if len(p) == 1:
@@ -166,7 +183,7 @@ def TranslatePorts(ports, protocols, term_name):
 
 
 # classes for storing the object types in the policy files.
-class Policy(object):
+class Policy:
   """The policy object contains everything found in a given policy file."""
 
   def __init__(self, header, terms):
@@ -176,10 +193,8 @@ class Policy(object):
       header: __main__.Header object. contains comments which should be passed
         on to the rendered acls as well as the type of acls this policy file
         should render to.
-
       terms: list __main__.Term. an array of Term objects which must be rendered
         in each of the rendered acls.
-
     Attributes:
       filters: list of tuples containing (header, terms).
     """
@@ -207,22 +222,26 @@ class Policy(object):
         term.port = TranslatePorts(term.port, term.protocol, term.name)
         if not term.port:
           raise TermPortProtocolError(
-              'no ports of the correct protocol for term %s' % (
-                  term.name))
+              'no ports of the correct protocol for term %s' % (term.name)
+          )
       if term.source_port:
-        term.source_port = TranslatePorts(term.source_port, term.protocol,
-                                          term.name)
+        term.source_port = TranslatePorts(
+            term.source_port, term.protocol, term.name
+        )
         if not term.source_port:
           raise TermPortProtocolError(
-              'no source ports of the correct protocol for term %s' % (
-                  term.name))
+              'no source ports of the correct protocol for term %s'
+              % (term.name)
+          )
       if term.destination_port:
-        term.destination_port = TranslatePorts(term.destination_port,
-                                               term.protocol, term.name)
+        term.destination_port = TranslatePorts(
+            term.destination_port, term.protocol, term.name
+        )
         if not term.destination_port:
           raise TermPortProtocolError(
-              'no destination ports of the correct protocol for term %s' % (
-                  term.name))
+              'no destination ports of the correct protocol for term %s'
+              % (term.name)
+          )
 
       # If argument is true, we optimize, otherwise just sort addresses
       term.AddressCleanup(_OPTIMIZE, self._NeedsAddressBook())
@@ -269,11 +288,13 @@ class Policy(object):
       for prior_index in range(index):
         # Check each term that came before for shading. Terms with next as an
         # action do not terminate evaluation, so cannot shade.
-        if (term in terms[prior_index]
-            and 'next' not in terms[prior_index].action):
+        if (
+            term in terms[prior_index]
+            and 'next' not in terms[prior_index].action
+        ):
           shading_errors.append(
-              '  %s is shaded by %s.' % (
-                  term.name, terms[prior_index].name))
+              '  %s is shaded by %s.' % (term.name, terms[prior_index].name)
+          )
     if shading_errors:
       raise ShadingError('\n'.join(shading_errors))
 
@@ -285,6 +306,7 @@ class Policy(object):
 
     Args:
       obj: object to be compared to for equality.
+
     Returns:
       True if the list of filters in this policy object is equal to the list
       in obj and False otherwise.
@@ -296,13 +318,14 @@ class Policy(object):
   def __str__(self):
     def tuple_str(tup):
       return '%s:%s' % (tup[0], tup[1])
+
     return 'Policy: {%s}' % ', '.join(map(tuple_str, self.filters))
 
   def __repr__(self):
     return self.__str__()
 
 
-class Term(object):
+class Term:
   """The Term object is used to store each of the terms.
 
   Args:
@@ -313,10 +336,12 @@ class Term(object):
       VarType.(S|D)?ADDRESS's
     address_exclude/source_address_exclude/destination_address_exclude: list of
       VarType.(S|D)?ADDEXCLUDE's
+    restrict-address-family: VarType.RESTRICT_ADDRESS_FAMILY
     port/source_port/destination_port: list of VarType.(S|D)?PORT's
     options: list of VarType.OPTION's.
     protocol: list of VarType.PROTOCOL's.
     counter: VarType.COUNTER
+    traffic-class: VarType.TRAFFIC_CLASS
     traffic-class-count: VarType.TRAFFIC_CLASS_COUNT
     action: list of VarType.ACTION's
     dscp-set: VarType.DSCP_SET
@@ -324,7 +349,10 @@ class Term(object):
     dscp-except: VarType.DSCP_EXCEPT
     comments: VarType.COMMENT
     encapsulate: VarType.ENCAPSULATE
+    decapsulate: VarType.DECAPSULATE
+    filter-term: VarType.FILTER_TERM
     flexible-match-range: VarType.FLEXIBLE_MATCH_RANGE
+    fortigate-application-id: VarType.FORTIGATE_APPLICATION_ID
     forwarding-class: VarType.FORWARDING_CLASS
     forwarding-class-except: VarType.FORWARDING_CLASS_EXCEPT
     expiration: VarType.EXPIRATION
@@ -332,74 +360,89 @@ class Term(object):
     logging: VarType.LOGGING
     log_name: VarType.LOG_NAME
     next-ip: VarType.NEXT_IP
+    next-interface: VarType.NEXT_INTERFACE
+    next-hop-group: VarType.NEXT_HOP_GROUP
+    port-mirror: VarType.PORT_MIRROR
     qos: VarType.QOS
     pan-application: VarType.PAN_APPLICATION
     policer: VarType.POLICER
     priority: VarType.PRIORITY
+    police_kbps: VarType.POLICE_KBPS
+    police_burst: VarType.POLICE_BURST
+    police_pps: VarType.POLICE_PPS
+    destination-zone: VarType.DZONE
+    source-service-accounts: VarType.SOURCE_SERVICE_ACCOUNTS
+    target-service-accounts: VarType.TARGET_SERVICE_ACCOUNTS
+    source-zone: VarType.SZONE
+    versa-application: VarType.VERSA_APPLICATION
     vpn: VarType.VPN
-  """
-  ICMP_TYPE = {4: {'echo-reply': 0,
-                   'unreachable': 3,
-                   'source-quench': 4,
-                   'redirect': 5,
-                   'alternate-address': 6,
-                   'echo-request': 8,
-                   'router-advertisement': 9,
-                   'router-solicitation': 10,
-                   'time-exceeded': 11,
-                   'parameter-problem': 12,
-                   'timestamp-request': 13,
-                   'timestamp-reply': 14,
-                   'information-request': 15,
-                   'information-reply': 16,
-                   'mask-request': 17,
-                   'mask-reply': 18,
-                   'conversion-error': 31,
-                   'mobile-redirect': 32,
-                  },
-               6: {'destination-unreachable': 1,
-                   'packet-too-big': 2,
-                   'time-exceeded': 3,
-                   'parameter-problem': 4,
-                   'echo-request': 128,
-                   'echo-reply': 129,
-                   'multicast-listener-query': 130,
-                   'multicast-listener-report': 131,
-                   'multicast-listener-done': 132,
-                   'router-solicit': 133,
-                   'router-advertisement': 134,
-                   'neighbor-solicit': 135,
-                   'neighbor-advertisement': 136,
-                   'redirect-message': 137,
-                   'router-renumbering': 138,
-                   'icmp-node-information-query': 139,
-                   'icmp-node-information-response': 140,
-                   'inverse-neighbor-discovery-solicitation': 141,
-                   'inverse-neighbor-discovery-advertisement': 142,
-                   'version-2-multicast-listener-report': 143,
-                   'home-agent-address-discovery-request': 144,
-                   'home-agent-address-discovery-reply': 145,
-                   'mobile-prefix-solicitation': 146,
-                   'mobile-prefix-advertisement': 147,
-                   'certification-path-solicitation': 148,
-                   'certification-path-advertisement': 149,
-                   'multicast-router-advertisement': 151,
-                   'multicast-router-solicitation': 152,
-                   'multicast-router-termination': 153,
-                  },
-              }
-  ICMP_CODE = {'unreachable': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
-                               10, 11, 12, 13, 14, 15],
-               'redirect': [0, 1, 2, 3],
-               'router-advertisement': [0, 16],
-               'time-exceeded': [0, 1],
-               'parameter-problem': [0, 1, 2],
-               'destination-unreachable': [0, 1, 2, 3, 4, 5, 6, 7],
-               'parameter-problem': [0, 1, 2, 3],
-               'router-renumbering': [0, 1, 255],
-               'icmp-node-information-query': [0, 1, 2],
-               'icmp-node-information-response': [0, 1, 2],
-              }
+  """  # fmt: skip
+  ICMP_TYPE = {
+      4: {
+          'echo-reply': 0,
+          'unreachable': 3,
+          'source-quench': 4,
+          'redirect': 5,
+          'alternate-address': 6,
+          'echo-request': 8,
+          'router-advertisement': 9,
+          'router-solicitation': 10,
+          'time-exceeded': 11,
+          'parameter-problem': 12,
+          'timestamp-request': 13,
+          'timestamp-reply': 14,
+          'information-request': 15,
+          'information-reply': 16,
+          'mask-request': 17,
+          'mask-reply': 18,
+          'traceroute': 30,
+          'conversion-error': 31,
+          'mobile-redirect': 32,
+      },
+      6: {
+          'destination-unreachable': 1,
+          'packet-too-big': 2,
+          'time-exceeded': 3,
+          'parameter-problem': 4,
+          'echo-request': 128,
+          'echo-reply': 129,
+          'multicast-listener-query': 130,
+          'multicast-listener-report': 131,
+          'multicast-listener-done': 132,
+          'router-solicit': 133,
+          'router-advertisement': 134,
+          'neighbor-solicit': 135,
+          'neighbor-advertisement': 136,
+          'redirect-message': 137,
+          'router-renumbering': 138,
+          'icmp-node-information-query': 139,
+          'icmp-node-information-response': 140,
+          'inverse-neighbor-discovery-solicitation': 141,
+          'inverse-neighbor-discovery-advertisement': 142,
+          'version-2-multicast-listener-report': 143,
+          'home-agent-address-discovery-request': 144,
+          'home-agent-address-discovery-reply': 145,
+          'mobile-prefix-solicitation': 146,
+          'mobile-prefix-advertisement': 147,
+          'certification-path-solicitation': 148,
+          'certification-path-advertisement': 149,
+          'multicast-router-advertisement': 151,
+          'multicast-router-solicitation': 152,
+          'multicast-router-termination': 153,
+      },
+  }
+  ICMP_CODE = {
+      'unreachable': [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+      'redirect': [0, 1, 2, 3],
+      'router-advertisement': [0, 16],
+      'time-exceeded': [0, 1],
+      'parameter-problem': [0, 1, 2],
+      'destination-unreachable': [0, 1, 2, 3, 4, 5, 6, 7],
+      'parameter-problem': [0, 1, 2, 3],
+      'router-renumbering': [0, 1, 255],
+      'icmp-node-information-query': [0, 1, 2],
+      'icmp-node-information-response': [0, 1, 2],
+  }
   _IPV4_BYTE_SIZE = 1
   _IPV6_BYTE_SIZE = 4
 
@@ -409,13 +452,16 @@ class Term(object):
     self.action = []
     self.address = []
     self.address_exclude = []
+    self.restrict_address_family = None
     self.comment = []
     self.counter = None
     self.expiration = None
     self.destination_address = []
     self.destination_address_exclude = []
     self.destination_port = []
+    self.destination_self = False
     self.destination_prefix = []
+    self.filter_term = None
     self.forwarding_class = []
     self.forwarding_class_except = []
     self.logging = []
@@ -426,11 +472,16 @@ class Term(object):
     self.owner = None
     self.policer = None
     self.port = []
+    self.police_kbps = None
+    self.police_burst = None
+    self.police_pps = None
     self.precedence = []
     self.protocol = []
     self.protocol_except = []
     self.qos = None
+    self.traffic_class = None
     self.pan_application = []
+    self.versa_application = []
     self.routing_instance = None
     self.source_address = []
     self.source_address_exclude = []
@@ -452,30 +503,42 @@ class Term(object):
     self.dscp_match = []
     self.dscp_except = []
     self.next_ip = None
+    self.next_interface = None
+    self.next_hop_group = None
     self.flexible_match_range = []
     self.source_prefix_except = []
     self.destination_prefix_except = []
     self.inactive = False
     self.encapsulate = None
+    self.decapsulate = None
+    self.port_mirror = None
     # srx specific
+    self.destination_zone = []
+    self.source_zone = []
     self.vpn = None
     # gce specific
     self.source_tag = []
     self.destination_tag = []
+    self.source_secure_tag = []
+    self.destination_secure_tag = []
     self.priority = None
+    self.source_service_accounts = []
+    self.target_service_accounts = []
     # iptables specific
     self.source_interface = None
     self.destination_interface = None
     self.platform = []
     self.platform_exclude = []
     self.target_resources = []
-    self.target_service_accounts = []
+
     self.timeout = None
     self.flattened = False
     self.flattened_addr = None
     self.flattened_saddr = None
     self.flattened_daddr = None
     self.stateless_reply = False
+    # fortigate specific
+    self.fortigate_application_id = []
 
     # AddObject touches variables which might not have been initialized
     # further up so this has to be at the end.
@@ -504,7 +567,8 @@ class Term(object):
     elif self.protocol_except:
       if other.protocol_except:
         if not self.CheckProtocolIsContained(
-            self.protocol_except, other.protocol_except):
+            self.protocol_except, other.protocol_except
+        ):
           return False
       elif other.protocol:
         for proto in other.protocol:
@@ -522,12 +586,14 @@ class Term(object):
     # flat 'address' is compared against other flat (saddr|daddr).
     # if NONE of these evaluate to True other is not contained.
     if not (
-        self.CheckAddressIsContained(
-            self.flattened_addr, other.flattened_addr)
+        self.CheckAddressIsContained(self.flattened_addr, other.flattened_addr)
         or self.CheckAddressIsContained(
-            self.flattened_addr, other.flattened_saddr)
+            self.flattened_addr, other.flattened_saddr
+        )
         or self.CheckAddressIsContained(
-            self.flattened_addr, other.flattened_daddr)):
+            self.flattened_addr, other.flattened_daddr
+        )
+    ):
       return False
 
     # compare flat address from other to flattened self (saddr|daddr).
@@ -535,34 +601,42 @@ class Term(object):
         # other's flat address needs both self saddr & daddr to contain in order
         # for the term to be contained. We already compared the flattened_addr
         # attributes of both above, which was not contained.
-        self.CheckAddressIsContained(
-            other.flattened_addr, self.flattened_saddr)
+        self.CheckAddressIsContained(other.flattened_addr, self.flattened_saddr)
         and self.CheckAddressIsContained(
-            other.flattened_addr, self.flattened_daddr)):
+            other.flattened_addr, self.flattened_daddr
+        )
+    ):
       return False
 
     # basic saddr/daddr check.
     if not (
         self.CheckAddressIsContained(
-            self.flattened_saddr, other.flattened_saddr)):
+            self.flattened_saddr, other.flattened_saddr
+        )
+    ):
       return False
     if not (
         self.CheckAddressIsContained(
-            self.flattened_daddr, other.flattened_daddr)):
+            self.flattened_daddr, other.flattened_daddr
+        )
+    ):
       return False
 
     # check ports
     # like the address directive, the port directive is special in that it can
     # be either source or destination.
     if self.port:
-      if not (self.CheckPortIsContained(self.port, other.port) or
-              self.CheckPortIsContained(self.port, other.source_port) or
-              self.CheckPortIsContained(self.port, other.destination_port)):
+      if not (
+          self.CheckPortIsContained(self.port, other.port)
+          or self.CheckPortIsContained(self.port, other.source_port)
+          or self.CheckPortIsContained(self.port, other.destination_port)
+      ):
         return False
     if not self.CheckPortIsContained(self.source_port, other.source_port):
       return False
-    if not self.CheckPortIsContained(self.destination_port,
-                                     other.destination_port):
+    if not self.CheckPortIsContained(
+        self.destination_port, other.destination_port
+    ):
       return False
 
     # prefix lists
@@ -571,15 +645,16 @@ class Term(object):
         return False
     if self.source_prefix_except:
       if sorted(self.source_prefix_except) != sorted(
-          other.source_prefix_except):
+          other.source_prefix_except
+      ):
         return False
     if self.destination_prefix:
-      if sorted(self.destination_prefix) != sorted(
-          other.destination_prefix):
+      if sorted(self.destination_prefix) != sorted(other.destination_prefix):
         return False
     if self.destination_prefix_except:
       if sorted(self.destination_prefix_except) != sorted(
-          other.destination_prefix_except):
+          other.destination_prefix_except
+      ):
         return False
 
     # check source and destination tags
@@ -624,8 +699,17 @@ class Term(object):
     if self.next_ip:
       if not other.next_ip:
         return False
+    if self.next_interface:
+      if not other.next_interface:
+        return False
+    if self.next_hop_group:
+      if not other.next_hop_group:
+        return False
     if self.encapsulate:
       if not other.encapsulate:
+        return False
+    if self.decapsulate:
+      if not other.decapsulate:
         return False
     if self.fragment_offset:
       # fragment_offset looks like 'integer-integer' or just, 'integer'
@@ -658,6 +742,9 @@ class Term(object):
           return False
       else:
         return False
+    if self.port_mirror:
+      if not other.port_mirror:
+        return False
     if self.icmp_type:
       if sorted(self.icmp_type) is not sorted(other.icmp_type):
         return False
@@ -674,6 +761,14 @@ class Term(object):
       if sorted(self.platform_exclude) is not sorted(other.platform_exclude):
         return False
 
+    if self.source_zone:
+      if sorted(self.source_zone) is not sorted(other.source_zone):
+        return False
+
+    if self.destination_zone:
+      if sorted(self.destination_zone) is not sorted(other.destination_zone):
+        return False
+
     # we have containment
     return True
 
@@ -685,26 +780,40 @@ class Term(object):
     if self.address_exclude:
       ret_str.append('  address_exclude: %s' % sorted(self.address_exclude))
     if self.source_address:
-      ret_str.append('  source_address: %s' %
-                     self._SortAddressesByFamily('source_address'))
+      ret_str.append(
+          '  source_address: %s' % self._SortAddressesByFamily('source_address')
+      )
     if self.source_address_exclude:
-      ret_str.append('  source_address_exclude: %s' %
-                     self._SortAddressesByFamily('source_address_exclude'))
+      ret_str.append(
+          '  source_address_exclude: %s'
+          % self._SortAddressesByFamily('source_address_exclude')
+      )
     if self.source_tag:
       ret_str.append('  source_tag: %s' % self.source_tag)
     if self.destination_address:
-      ret_str.append('  destination_address: %s' %
-                     self._SortAddressesByFamily('destination_address'))
+      ret_str.append(
+          '  destination_address: %s'
+          % self._SortAddressesByFamily('destination_address')
+      )
     if self.destination_address_exclude:
-      ret_str.append('  destination_address_exclude: %s' %
-                     self._SortAddressesByFamily('destination_address_exclude'))
+      ret_str.append(
+          '  destination_address_exclude: %s'
+          % self._SortAddressesByFamily('destination_address_exclude')
+      )
+    if self.destination_self:
+      ret_str.append('  destination_self: true')
     if self.destination_tag:
       ret_str.append('  destination_tag: %s' % self.destination_tag)
     if self.target_resources:
       ret_str.append('  target_resources: %s' % self.target_resources)
+    if self.source_service_accounts:
+      ret_str.append(
+          '  source_service_accounts: %s' % self.source_service_accounts
+      )
     if self.target_service_accounts:
-      ret_str.append('  target_service_accounts: %s' %
-                     self.target_service_accounts)
+      ret_str.append(
+          '  target_service_accounts: %s' % self.target_service_accounts
+      )
     if self.source_prefix:
       ret_str.append('  source_prefix: %s' % self.source_prefix)
     if self.source_prefix_except:
@@ -712,21 +821,31 @@ class Term(object):
     if self.destination_prefix:
       ret_str.append('  destination_prefix: %s' % self.destination_prefix)
     if self.destination_prefix_except:
-      ret_str.append('  destination_prefix_except: %s' %
-                     self.destination_prefix_except)
+      ret_str.append(
+          '  destination_prefix_except: %s' % self.destination_prefix_except
+      )
+    if self.filter_term:
+      ret_str.append('  filter_term: %s' % self.filter_term)
     if self.forwarding_class:
       ret_str.append('  forwarding_class: %s' % self.forwarding_class)
     if self.forwarding_class_except:
-      ret_str.append('  forwarding_class_except: %s'
-                     % self.forwarding_class_except)
+      ret_str.append(
+          '  forwarding_class_except: %s' % self.forwarding_class_except
+      )
     if self.icmp_type:
       ret_str.append('  icmp_type: %s' % sorted(self.icmp_type))
     if self.icmp_code:
       ret_str.append('  icmp_code: %s' % sorted(self.icmp_code))
     if self.next_ip:
       ret_str.append('  next_ip: %s' % self.next_ip)
+    if self.next_interface:
+      ret_str.append('  next_interface: %s' % self.next_interface)
+    if self.next_hop_group:
+      ret_str.append('  next_hop_group: %s' % self.next_hop_group)
     if self.encapsulate:
       ret_str.append('  encapsulate: %s' % self.encapsulate)
+    if self.decapsulate:
+      ret_str.append('  decapsulate: %s' % self.decapsulate)
     if self.protocol:
       ret_str.append('  protocol: %s' % sorted(self.protocol))
     if self.protocol_except:
@@ -735,6 +854,8 @@ class Term(object):
       ret_str.append('  owner: %s' % self.owner)
     if self.port:
       ret_str.append('  port: %s' % sorted(self.port))
+    if self.port_mirror:
+      ret_str.append('  port_mirror: %s' % self.port_mirror)
     if self.source_port:
       ret_str.append('  source_port: %s' % sorted(self.source_port))
     if self.destination_port:
@@ -747,17 +868,29 @@ class Term(object):
       ret_str.append('  flexible_match_range: %s' % self.flexible_match_range)
     if self.qos:
       ret_str.append('  qos: %s' % self.qos)
+    if self.traffic_class:
+      ret_str.append('  traffic-class: %s' % self.traffic_class)
     if self.pan_application:
       ret_str.append('  pan_application: %s' % self.pan_application)
+    if self.versa_application:
+      # pylint: disable=consider-using-f-string
+      ret_str.append('  versa_application: %s' % self.versa_application)
     if self.logging:
       ret_str.append('  logging: %s' % self.logging)
     if self.log_limit:
-      ret_str.append('  log_limit: %s/%s' % (self.log_limit[0],
-                                             self.log_limit[1]))
+      ret_str.append(
+          '  log_limit: %s/%s' % (self.log_limit[0], self.log_limit[1])
+      )
     if self.log_name:
       ret_str.append('  log_name: %s' % self.log_name)
     if self.priority:
       ret_str.append('  priority: %s' % self.priority)
+    if self.police_kbps:
+      ret_str.append('  police_kbps: %s' % self.police_kbps)
+    if self.police_burst:
+      ret_str.append('  police_burst: %s' % self.police_burst)
+    if self.police_pps:
+      ret_str.append('  police_pps: %s' % self.police_pps)
     if self.counter:
       ret_str.append('  counter: %s' % self.counter)
     if self.traffic_class_count:
@@ -777,12 +910,19 @@ class Term(object):
     if self.timeout:
       ret_str.append('  timeout: %s' % self.timeout)
     if self.vpn:
-      vpn_name, pair_policy = self.vpn
+      vpn_name, pair_policy = self.vpn  # pyrefly: ignore[not-iterable]
       if pair_policy:
-        ret_str.append('  vpn: name = %s, pair_policy = %s' %
-                       (vpn_name, pair_policy))
+        ret_str.append(
+            '  vpn: name = %s, pair_policy = %s' % (vpn_name, pair_policy)
+        )
       else:
         ret_str.append('  vpn: name = %s' % vpn_name)
+    if self.source_zone:
+      ret_str.append('  source_zone: %s' % sorted(self.source_zone))
+    if self.destination_zone:
+      ret_str.append('  destination_zone: %s' % sorted(self.destination_zone))
+    if self.fortigate_application_id:
+      ret_str.append('  application_id: %s' % self.fortigate_application_id)
 
     return '\n'.join(ret_str)
 
@@ -795,35 +935,42 @@ class Term(object):
       return False
 
     # addresses.
-    if not (sorted(self.address) == sorted(other.address) and
-            sorted(self.source_address) == sorted(other.source_address) and
-            sorted(self.source_address_exclude) ==
-            sorted(other.source_address_exclude) and
-            sorted(self.destination_address) ==
-            sorted(other.destination_address) and
-            sorted(self.destination_address_exclude) ==
-            sorted(other.destination_address_exclude)):
+    if not (
+        sorted(self.address) == sorted(other.address)
+        and sorted(self.source_address) == sorted(other.source_address)
+        and sorted(self.source_address_exclude)
+        == sorted(other.source_address_exclude)
+        and sorted(self.destination_address)
+        == sorted(other.destination_address)
+        and sorted(self.destination_address_exclude)
+        == sorted(other.destination_address_exclude)
+    ):
       return False
 
     # prefix lists
-    if not (sorted(self.source_prefix) == sorted(other.source_prefix) and
-            sorted(self.source_prefix_except) ==
-            sorted(other.source_prefix_except) and
-            sorted(self.destination_prefix) ==
-            sorted(other.destination_prefix) and
-            sorted(self.destination_prefix_except) ==
-            sorted(other.destination_prefix_except)):
+    if not (
+        sorted(self.source_prefix) == sorted(other.source_prefix)
+        and sorted(self.source_prefix_except)
+        == sorted(other.source_prefix_except)
+        and sorted(self.destination_prefix) == sorted(other.destination_prefix)
+        and sorted(self.destination_prefix_except)
+        == sorted(other.destination_prefix_except)
+    ):
       return False
 
     # ports
-    if not (sorted(self.port) == sorted(other.port) and
-            sorted(self.source_port) == sorted(other.source_port) and
-            sorted(self.destination_port) == sorted(other.destination_port)):
+    if not (
+        sorted(self.port) == sorted(other.port)
+        and sorted(self.source_port) == sorted(other.source_port)
+        and sorted(self.destination_port) == sorted(other.destination_port)
+    ):
       return False
 
     # protocol
-    if not (sorted(self.protocol) == sorted(other.protocol) and
-            sorted(self.protocol_except) == sorted(other.protocol_except)):
+    if not (
+        sorted(self.protocol) == sorted(other.protocol)
+        and sorted(self.protocol_except) == sorted(other.protocol_except)
+    ):
       return False
 
     # option
@@ -834,8 +981,16 @@ class Term(object):
     if self.qos != other.qos:
       return False
 
+    # traffic-class
+    if self.traffic_class != other.traffic_class:
+      return False
+
     # pan-application
     if sorted(self.pan_application) != sorted(other.pan_application):
+      return False
+
+    # versa-application
+    if sorted(self.versa_application) != sorted(other.versa_application):
       return False
 
     # verbatim
@@ -846,6 +1001,18 @@ class Term(object):
     if self.policer != other.policer:
       return False
 
+    # police_kbps
+    if self.police_kbps != other.police_kbps:
+      return False
+
+    # police_burst
+    if self.police_burst != other.police_burst:
+      return False
+
+    # police_pps
+    if self.police_pps != other.police_pps:
+      return False
+
     # interface
     if self.source_interface != other.source_interface:
       return False
@@ -854,8 +1021,10 @@ class Term(object):
       return False
 
     # tags
-    if not (sorted(self.source_tag) == sorted(other.source_tag) and
-            sorted(self.destination_tag) == sorted(other.destination_tag)):
+    if not (
+        sorted(self.source_tag) == sorted(other.source_tag)
+        and sorted(self.destination_tag) == sorted(other.destination_tag)
+    ):
       return False
 
     if self.ttl != other.ttl:
@@ -868,6 +1037,8 @@ class Term(object):
     if self.qos != other.qos:
       return False
     if sorted(self.pan_application) != sorted(other.pan_application):
+      return False
+    if sorted(self.versa_application) != sorted(other.versa_application):
       return False
     if self.packet_length != other.packet_length:
       return False
@@ -883,14 +1054,18 @@ class Term(object):
       return False
     if sorted(self.traffic_type) != sorted(other.traffic_type):
       return False
+    if sorted(self.fortigate_application_id) != sorted(other.fortigate_application_id):
+      return False
 
     # vpn
     if self.vpn != other.vpn:
       return False
 
     # platform
-    if not (sorted(self.platform) == sorted(other.platform) and
-            sorted(self.platform_exclude) == sorted(other.platform_exclude)):
+    if not (
+        sorted(self.platform) == sorted(other.platform)
+        and sorted(self.platform_exclude) == sorted(other.platform_exclude)
+    ):
       return False
 
     # timeout
@@ -901,25 +1076,57 @@ class Term(object):
     if self.precedence != other.precedence:
       return False
 
+    # filter
+    if self.filter_term != other.filter_term:
+      return False
+
     # forwarding-class
     if sorted(self.forwarding_class) != sorted(other.forwarding_class):
       return False
 
     # forwarding-class-except
     if sorted(self.forwarding_class_except) != sorted(
-        other.forwarding_class_except):
+        other.forwarding_class_except
+    ):
       return False
 
     # next_ip
     if self.next_ip != other.next_ip:
       return False
 
+    # next_interface
+    if self.next_interface != other.next_interface:
+      return False
+
+    # next_hop_group
+    if self.next_hop_group != other.next_hop_group:
+      return False
+
     # encapsulate
     if self.encapsulate != other.encapsulate:
       return False
 
+    # decapsulate
+    if self.decapsulate != other.decapsulate:
+      return False
+
     # flexible_match
     if self.flexible_match_range != other.flexible_match_range:
+      return False
+
+    # port_mirror
+    if self.port_mirror != other.port_mirror:
+      return False
+
+    # source_zone
+    if sorted(self.source_zone) != sorted(other.source_zone):
+      return False
+
+    # destination_zone
+    if sorted(self.destination_zone) != sorted(other.destination_zone):
+      return False
+
+    if self.destination_self != other.destination_self:
       return False
 
     return True
@@ -938,6 +1145,7 @@ class Term(object):
       addr_type: string, this will be either 'source_address',
         'source_address_exclude', 'destination_address' or
         'destination_address_exclude'
+
     Returns:
       List of IP addresses sourted v4 then v6
     """
@@ -972,16 +1180,23 @@ class Term(object):
         counter += self._IPV4_BYTE_SIZE
     return counter
 
-  def FlattenAll(self):
+  def FlattenAll(self, mutate=True):
     """Reduce source, dest, and address fields to their post-exclude state.
 
     Populates the self.flattened_addr, self.flattened_saddr,
     self.flattened_daddr by removing excludes from includes.
+
+    Args:
+      mutate: Boolean value indicating if this method should mutate the original
+        address (address, destination_address, source_address)
     """
     # No excludes, set flattened attributes and move along.
     self.flattened = True
-    if not (self.source_address_exclude or self.destination_address_exclude or
-            self.address_exclude):
+    if not (
+        self.source_address_exclude
+        or self.destination_address_exclude
+        or self.address_exclude
+    ):
       self.flattened_saddr = self.source_address
       self.flattened_daddr = self.destination_address
       self.flattened_addr = self.address
@@ -989,28 +1204,32 @@ class Term(object):
 
     if self.source_address_exclude:
       self.flattened_saddr = nacaddr.AddressListExclude(
-          self.source_address,
-          self.source_address_exclude,
-          collapse_addrs=False)
-      self.source_address = self.flattened_saddr
+          self.source_address, self.source_address_exclude, collapse_addrs=False
+      )
+      if mutate:
+        self.source_address = self.flattened_saddr
     if self.destination_address_exclude:
       self.flattened_daddr = nacaddr.AddressListExclude(
           self.destination_address,
           self.destination_address_exclude,
-          collapse_addrs=False)
-      self.destination_address = self.flattened_daddr
+          collapse_addrs=False,
+      )
+      if mutate:
+        self.destination_address = self.flattened_daddr
     if self.address_exclude:
       self.flattened_addr = nacaddr.AddressListExclude(
-          self.address, self.address_exclude, collapse_addrs=False)
-      self.address = self.flattened_addr
+          self.address, self.address_exclude, collapse_addrs=False
+      )
+      if mutate:
+        self.address = self.flattened_addr
 
   def GetAddressOfVersion(self, addr_type, af=None):
     """Returns addresses of the appropriate Address Family.
 
     Args:
-      addr_type: string, this will be either
-        'source_address', 'source_address_exclude',
-        'destination_address' or 'destination_address_exclude'
+      addr_type: string, this will be either 'source_address',
+        'source_address_exclude', 'destination_address' or
+        'destination_address_exclude'
       af: int or None, either 4 for IPv4 or 6 for IPv6
 
     Returns:
@@ -1025,8 +1244,8 @@ class Term(object):
     """Add an object of unknown type to this term.
 
     Args:
-      obj: single or list of either
-        [Address, Port, Option, Protocol, Counter, Action, Comment, Expiration]
+      obj: single or list of either [Address, Port, Option, Protocol, Counter,
+        Action, Comment, Expiration]
 
     Raises:
       InvalidTermActionError: if the action defined isn't an accepted action.
@@ -1035,29 +1254,29 @@ class Term(object):
         understand.
       InvalidTermLoggingError: when a option is set for logging not known.
     """
-    if type(obj) is list:
+    if isinstance(obj, list):
       for x in obj:
         # do we have a list of addresses?
         # expanded address fields consolidate naked address fields with
         # saddr/daddr.
         if x.var_type is VarType.SADDRESS:
-          saddr = DEFINITIONS.GetNetAddr(x.value)
+          saddr = _DEFINITIONS().GetNetAddr(x.value)
           self.source_address.extend(saddr)
         elif x.var_type is VarType.DADDRESS:
-          daddr = DEFINITIONS.GetNetAddr(x.value)
+          daddr = _DEFINITIONS().GetNetAddr(x.value)
           self.destination_address.extend(daddr)
         elif x.var_type is VarType.ADDRESS:
-          addr = DEFINITIONS.GetNetAddr(x.value)
+          addr = _DEFINITIONS().GetNetAddr(x.value)
           self.address.extend(addr)
         # do we have address excludes?
         elif x.var_type is VarType.SADDREXCLUDE:
-          saddr_exclude = DEFINITIONS.GetNetAddr(x.value)
+          saddr_exclude = _DEFINITIONS().GetNetAddr(x.value)
           self.source_address_exclude.extend(saddr_exclude)
         elif x.var_type is VarType.DADDREXCLUDE:
-          daddr_exclude = DEFINITIONS.GetNetAddr(x.value)
+          daddr_exclude = _DEFINITIONS().GetNetAddr(x.value)
           self.destination_address_exclude.extend(daddr_exclude)
         elif x.var_type is VarType.ADDREXCLUDE:
-          addr_exclude = DEFINITIONS.GetNetAddr(x.value)
+          addr_exclude = _DEFINITIONS().GetNetAddr(x.value)
           self.address_exclude.extend(addr_exclude)
         # do we have a list of ports?
         elif x.var_type is VarType.PORT:
@@ -1095,8 +1314,12 @@ class Term(object):
           self.forwarding_class_except.append(x.value)
         elif x.var_type is VarType.PAN_APPLICATION:
           self.pan_application.append(x.value)
+        elif x.var_type is VarType.VERSA_APPLICATION:
+          self.versa_application.append(x.value)
         elif x.var_type is VarType.NEXT_IP:
-          self.next_ip = DEFINITIONS.GetNetAddr(x.value)
+          self.next_ip = _DEFINITIONS().GetNetAddr(x.value)
+        elif x.var_type is VarType.NEXT_INTERFACE:
+          self.next_interface = x.value
         elif x.var_type is VarType.PLATFORM:
           self.platform.append(x.value)
         elif x.var_type is VarType.PLATFORMEXCLUDE:
@@ -1109,19 +1332,37 @@ class Term(object):
           self.source_tag.append(x.value)
         elif x.var_type is VarType.DTAG:
           self.destination_tag.append(x.value)
+        elif x.var_type is VarType.SOURCE_SECURE_TAGS:
+          self.source_secure_tag.append(x.value)
+        elif x.var_type is VarType.DESTINATION_SECURE_TAGS:
+          self.destination_secure_tag.append(x.value)
         elif x.var_type is VarType.FLEXIBLE_MATCH_RANGE:
           self.flexible_match_range.append(x.value)
         elif x.var_type is VarType.TARGET_RESOURCES:
           self.target_resources.append(x.value)
+        elif x.var_type is VarType.SOURCE_SERVICE_ACCOUNTS:
+          self.source_service_accounts.append(x.value)
         elif x.var_type is VarType.TARGET_SERVICE_ACCOUNTS:
           self.target_service_accounts.append(x.value)
+        elif x.var_type is VarType.SZONE:
+          self.source_zone.append(x.value)
+        elif x.var_type is VarType.DZONE:
+          self.destination_zone.append(x.value)
+        elif x.var_type is VarType.DESTINATION_SELF:
+          if x.value == 'true':
+            self.destination_self = True
+        elif x.var_type is VarType.FORTIGATE_APPLICATION_ID:
+          self.fortigate_application_id.append(x.value)
         else:
           raise TermObjectTypeError(
-              '%s isn\'t a type I know how to deal with (contains \'%s\')' % (
-                  type(x), x.value))
+              "%s isn't a type I know how to deal with (contains '%s')"
+              % (type(x), x.value)
+          )
     else:
       # stupid no switch statement in python
-      if obj.var_type is VarType.COMMENT:
+      if obj.var_type is VarType.RESTRICT_ADDRESS_FAMILY:
+        self.restrict_address_family = obj.value
+      elif obj.var_type is VarType.COMMENT:
         self.comment.append(str(obj))
       elif obj.var_type is VarType.OWNER:
         self.owner = obj.value
@@ -1139,8 +1380,14 @@ class Term(object):
         self.forwarding_class_except.append(obj.value)
       elif obj.var_type is VarType.PAN_APPLICATION:
         self.pan_application.append(obj.value)
+      elif obj.var_type is VarType.VERSA_APPLICATION:
+        self.versa_application.append(obj.value)
       elif obj.var_type is VarType.NEXT_IP:
-        self.next_ip = DEFINITIONS.GetNetAddr(obj.value)
+        self.next_ip = _DEFINITIONS().GetNetAddr(obj.value)
+      elif obj.var_type is VarType.NEXT_INTERFACE:
+        self.next_interface = obj.value
+      elif obj.var_type is VarType.NEXT_HOP_GROUP:
+        self.next_hop_group = obj.value
       elif obj.var_type is VarType.VERBATIM:
         self.verbatim.append(obj.value)
       elif obj.var_type is VarType.ACTION:
@@ -1151,6 +1398,10 @@ class Term(object):
         self.counter = obj
       elif obj.var_type is VarType.ENCAPSULATE:
         self.encapsulate = obj.value
+      elif obj.var_type is VarType.DECAPSULATE:
+        self.decapsulate = obj.value
+      elif obj.var_type is VarType.PORT_MIRROR:
+        self.port_mirror = obj.value
       elif obj.var_type is VarType.TRAFFIC_CLASS_COUNT:
         self.traffic_class_count = obj
       elif obj.var_type is VarType.ICMP_TYPE:
@@ -1159,8 +1410,9 @@ class Term(object):
         self.icmp_code.extend(obj.value)
       elif obj.var_type is VarType.LOGGING:
         if str(obj) not in _LOGGING:
-          raise InvalidTermLoggingError('%s is not a valid logging option' %
-                                        obj)
+          raise InvalidTermLoggingError(
+              '%s is not a valid logging option' % obj
+          )
         self.logging.append(obj)
       elif obj.var_type is VarType.LOG_LIMIT:
         self.log_limit = obj.value
@@ -1169,11 +1421,19 @@ class Term(object):
       # police man, tryin'a take you jail
       elif obj.var_type is VarType.POLICER:
         self.policer = obj.value
+      elif obj.var_type is VarType.POLICE_KBPS:
+        self.police_kbps = int(obj.value)
+      elif obj.var_type is VarType.POLICE_BURST:
+        self.police_burst = int(obj.value)
+      elif obj.var_type is VarType.POLICE_PPS:
+        self.police_pps = int(obj.value)
       elif obj.var_type is VarType.PRIORITY:
         self.priority = obj.value
       # qos?
       elif obj.var_type is VarType.QOS:
         self.qos = obj.value
+      elif obj.var_type is VarType.TRAFFIC_CLASS:
+        self.traffic_class = int(obj.value)
       elif obj.var_type is VarType.PACKET_LEN:
         self.packet_length = obj.value
       elif obj.var_type is VarType.FRAGMENT_OFFSET:
@@ -1194,11 +1454,21 @@ class Term(object):
         self.ttl = int(obj.value)
       elif obj.var_type is VarType.TARGET_RESOURCES:
         self.target_resources.append(obj.value)
+      elif obj.var_type is VarType.SOURCE_SERVICE_ACCOUNTS:
+        self.source_service_accounts.append(obj.value)
       elif obj.var_type is VarType.TARGET_SERVICE_ACCOUNTS:
         self.target_service_accounts.append(obj.value)
+      elif obj.var_type is VarType.FILTER_TERM:
+        self.filter_term = obj.value
+      elif obj.var_type is VarType.DESTINATION_SELF:
+        if obj.value == 'true':
+          self.destination_self = True
+      elif obj.var_type is VarType.FORTIGATE_APPLICATION_ID:
+        self.fortigate_application_id.append(obj.value)
       else:
         raise TermObjectTypeError(
-            '%s isn\'t a type I know how to deal with' % (type(obj)))
+            "%s isn't a type I know how to deal with" % (type(obj))
+        )
 
   def SanityCheck(self):
     """Sanity check the definition of the term.
@@ -1218,76 +1488,120 @@ class Term(object):
       InvalidTermTTLValue: TTL value is invalid.
       MixedPortandNonPortProtos: Ports specified with protocol that doesn't
         support ports.
+      InvalidTrafficClassValue: Traffic class value is invalid.
 
     This should be called when the term is fully formed, and
     all of the options are set.
-
     """
     if self.verbatim:
-      if (self.action or self.source_port or self.destination_port or
-          self.port or self.protocol or self.option):
+      if (
+          self.action
+          or self.source_port
+          or self.destination_port
+          or self.port
+          or self.protocol
+          or self.option
+      ):
         raise ParseError(
-            'term "%s" has both verbatim and non-verbatim tokens.' % self.name)
+            'term "%s" has both verbatim and non-verbatim tokens.' % self.name
+        )
     else:
-      if not self.action and not self.routing_instance and not self.next_ip and not self.encapsulate:
+      if (
+          not self.action
+          and not self.routing_instance
+          and not self.next_ip
+          and not self.next_interface
+          and not self.next_hop_group
+          and not self.encapsulate
+          and not self.decapsulate
+          and not self.filter_term
+          and not self.port_mirror
+      ):
         raise TermNoActionError('no action specified for term %s' % self.name)
+      if self.filter_term and self.action:
+        raise InvalidTermActionError(
+            'term "%s" has both filter and action tokens.' % self.name
+        )
       # have we specified a port with a protocol that doesn't support ports?
-      if self.source_port or self.destination_port or self.port:
-        if not any(proto in self.protocol for proto in ['tcp', 'udp', 'sctp']):
+      protos_no_ports = {p for p in self.protocol if p not in PROTOS_WITH_PORTS}
+      if protos_no_ports != set() and (
+          self.source_port or self.destination_port or self.port
+      ):
+        if set(self.protocol) - protos_no_ports != set():
+          # This is a more specific error - some protocols support, but not all
+          raise MixedPortandNonPortProtos(
+              'Term %s contains mixed uses of protocols with and without port '
+              'numbers\nProtocols: %s' % (self.name, self.protocol)
+          )
+        else:
           raise TermPortProtocolError(
-              'ports specified with a protocol that doesn\'t support ports. '
-              'Term: %s ' % self.name)
+              "ports specified with protocol(s) that don't support ports. "
+              'Term: %s Protocols: %s ' % (self.name, protos_no_ports)
+          )
+
     # TODO(pmoody): do we have mutually exclusive options?
     # eg. tcp-established + tcp-initial?
 
     if self.ether_type and (
-        self.protocol or
-        self.address or
-        self.destination_address or
-        self.destination_address_exclude or
-        self.destination_port or
-        self.destination_prefix or
-        self.destination_prefix_except or
-        self.source_address or
-        self.source_address_exclude or
-        self.source_port or
-        self.source_prefix or
-        self.source_prefix_except):
+        self.protocol
+        or self.address
+        or self.destination_address
+        or self.destination_address_exclude
+        or self.destination_port
+        or self.destination_prefix
+        or self.destination_prefix_except
+        or self.source_address
+        or self.source_address_exclude
+        or self.source_port
+        or self.source_prefix
+        or self.source_prefix_except
+    ):
       raise TermProtocolEtherTypeError(
           'ether-type not supported when used with upper-layer protocol '
-          'restrictions. Term: %s' % self.name)
+          'restrictions. Term: %s'
+          % self.name
+      )
     # validate icmp-types if specified, but addr_family will have to be checked
     # in the generators as policy module doesn't know about that at this point.
     if self.icmp_code:
       if len(self.icmp_type) != 1:
-        raise ICMPCodeError('ICMP Code used with invalid number of types.'
-                            'Use only one ICMP type.\n Term: %s' % self.name)
+        raise ICMPCodeError(
+            'ICMP Code used with invalid number of types.'
+            'Use only one ICMP type.\n Term: %s'
+            % self.name
+        )
       type_name = self.icmp_type[0]
       bad_codes = []
       for code in self.icmp_code:
         if code not in self.ICMP_CODE[type_name]:
           bad_codes.append(code)
       if bad_codes:
-        raise ICMPCodeError('ICMP Codes %s are invalid for ICMP Type %s.'
-                            '\nTerm: %s' % (bad_codes, type_name, self.name))
+        raise ICMPCodeError(
+            'ICMP Codes %s are invalid for ICMP Type %s.\nTerm: %s'
+            % (bad_codes, type_name, self.name)
+        )
     if self.icmp_type:
       for icmptype in self.icmp_type:
-        if (icmptype not in self.ICMP_TYPE[4] and icmptype not in
-            self.ICMP_TYPE[6]):
-          raise TermInvalidIcmpType('Term %s contains an invalid icmp-type:'
-                                    '%s' % (self.name, icmptype))
-    proto_copy = [p for p in self.protocol if p != 'tcp' and p != 'udp']
-    if ('tcp'in self.protocol or 'udp' in self.protocol) and proto_copy:
-      if self.source_port or self.destination_port or self.port:
-        raise MixedPortandNonPortProtos(
-            'Term %s contains mixed uses of protocols with and without port '
-            'numbers.\nProtocols: %s' % (self.name, self.protocol))
+        if (
+            icmptype not in self.ICMP_TYPE[4]
+            and icmptype not in self.ICMP_TYPE[6]
+        ):
+          raise TermInvalidIcmpType(
+              'Term %s contains an invalid icmp-type:%s' % (self.name, icmptype)
+          )
 
     if self.ttl:
       if not _MIN_TTL <= self.ttl <= _MAX_TTL:
+        raise InvalidTermTTLValue(
+            'Term %s contains invalid TTL: %s' % (self.name, self.ttl)
+        )
 
-        raise InvalidTermTTLValue('Term %s contains invalid TTL: %s'
-                                  % (self.name, self.ttl))
+    if self.traffic_class:
+      if not 0 <= self.traffic_class <= 7:
+        raise InvalidTrafficClassValue(
+            'Term %s contains invalid traffic class: %s'
+            % (self.name, self.traffic_class)
+        )
 
   def AddressCleanup(self, optimize=True, addressbook=False):
     """Do Address and Port collapsing.
@@ -1300,6 +1614,7 @@ class Term(object):
       optimize: boolean value indicating whether to optimize addresses
       addressbook: Boolean indicating if addressbook is used.
     """
+
     def cleanup(addresses, complement_addresses):
       if not optimize:
         return nacaddr.SortAddrList(addresses)
@@ -1313,18 +1628,22 @@ class Term(object):
       self.address = cleanup(self.address, None)
 
     if self.source_address:
-      self.source_address = cleanup(self.source_address,
-                                    self.source_address_exclude)
+      self.source_address = cleanup(
+          self.source_address, self.source_address_exclude
+      )
     if self.source_address_exclude:
-      self.source_address_exclude = cleanup(self.source_address_exclude,
-                                            self.source_address)
+      self.source_address_exclude = cleanup(
+          self.source_address_exclude, self.source_address
+      )
 
     if self.destination_address:
-      self.destination_address = cleanup(self.destination_address,
-                                         self.destination_address_exclude)
+      self.destination_address = cleanup(
+          self.destination_address, self.destination_address_exclude
+      )
     if self.destination_address_exclude:
       self.destination_address_exclude = cleanup(
-          self.destination_address_exclude, self.destination_address)
+          self.destination_address_exclude, self.destination_address
+      )
 
     # port collapsing.
     if self.port:
@@ -1339,7 +1658,7 @@ class Term(object):
 
     Args:
       ports: a list of port strings eg: [(80,80), (53,53) (2000, 2009),
-                                         (1024,65535)]
+        (1024,65535)]
 
     Returns:
       ret_array: the collapsed sorted list of ports, eg: [(53,53), (80,80),
@@ -1401,8 +1720,9 @@ class Term(object):
     for sub_port in subset:
       not_contains = True
       for sup_port in superset:
-        if (int(sub_port[0]) >= int(sup_port[0])
-            and int(sub_port[1]) <= int(sup_port[1])):
+        if int(sub_port[0]) >= int(sup_port[0]) and int(sub_port[1]) <= int(
+            sup_port[1]
+        ):
           not_contains = False
           break
       if not_contains:
@@ -1436,7 +1756,7 @@ class Term(object):
     return True
 
 
-class VarType(object):
+class VarType:
   """Generic object meant to store lots of basic policy types."""
 
   COMMENT = 0
@@ -1500,6 +1820,24 @@ class VarType(object):
   TARGET_RESOURCES = 59
   TARGET_SERVICE_ACCOUNTS = 60
   ENCAPSULATE = 61
+  FILTER_TERM = 62
+  RESTRICT_ADDRESS_FAMILY = 63
+  PORT_MIRROR = 64
+  SZONE = 65
+  DZONE = 66
+  DECAPSULATE = 67
+  SOURCE_SERVICE_ACCOUNTS = 68
+  VERSA_APPLICATION = 69
+  TRAFFIC_CLASS = 70
+  NEXT_HOP_GROUP = 71
+  NEXT_INTERFACE = 72
+  POLICE_KBPS = 73
+  POLICE_BURST = 74
+  POLICE_PPS = 75
+  FORTIGATE_APPLICATION_ID = 76
+  DESTINATION_SELF = 77
+  SOURCE_SECURE_TAGS = 78
+  DESTINATION_SECURE_TAGS = 79
 
   def __init__(self, var_type, value):
     self.var_type = var_type
@@ -1524,7 +1862,7 @@ class VarType(object):
     return id(self)
 
 
-class Header(object):
+class Header:
   """The header of the policy file contains the targets and a global comment."""
 
   def __init__(self):
@@ -1538,7 +1876,7 @@ class Header(object):
 
     Args:
       obj: of type VarType.COMMENT, VarType.APPLY_GROUPS,
-      VarType.APPLY_GROUPS_EXCEPT, or Target
+        VarType.APPLY_GROUPS_EXCEPT, or Target
 
     Raises:
       RuntimeError: if object type cannot be determined
@@ -1598,7 +1936,8 @@ class Header(object):
         ', '.join(map(str, self.target)),
         ', '.join(self.comment),
         ', '.join(self.apply_groups),
-        ', '.join(self.apply_groups_except))
+        ', '.join(self.apply_groups_except),
+    )
 
   def __repr__(self):
     return self.__str__()
@@ -1611,6 +1950,7 @@ class Header(object):
 
     Args:
       obj: object to be compared to for equality.
+
     Returns:
       True if all the list member variables of this object are equal to the list
       member variables of obj and False otherwise.
@@ -1632,7 +1972,7 @@ class Header(object):
 # b/c we're almost certainly going to have to do something more exotic with
 # it shortly to account for various rendering options like default iptables
 # policies or output file names, etc. etc.
-class Target(object):
+class Target:
   """The type of acl to be rendered from this policy file."""
 
   def __init__(self, target):
@@ -1657,10 +1997,12 @@ tokens = (
     'ACTION',
     'ADDR',
     'ADDREXCLUDE',
+    'RESTRICT_ADDRESS_FAMILY',
     'COMMENT',
     'COUNTER',
     'DADDR',
     'DADDREXCLUDE',
+    'DECAPSULATE',
     'DINTERFACE',
     'DPFX',
     'EDPFX',
@@ -1672,11 +2014,15 @@ tokens = (
     'DSCP_RANGE',
     'DSCP_SET',
     'DTAG',
+    'DZONE',
+    'DESTINATION_SELF',
     'ENCAPSULATE',
     'ESCAPEDSTRING',
     'ETHER_TYPE',
     'EXPIRATION',
+    'FILTER_TERM',
     'FLEXIBLE_MATCH_RANGE',
+    'FORTIGATE_APPLICATION_ID',
     'FORWARDING_CLASS',
     'FORWARDING_CLASS_EXCEPT',
     'FRAGMENT_OFFSET',
@@ -1695,13 +2041,19 @@ tokens = (
     'LPAREN',
     'LSQUARE',
     'NEXT_IP',
+    'NEXT_INTERFACE',
+    'NEXT_HOP_GROUP',
     'OPTION',
     'OWNER',
     'PACKET_LEN',
     'PLATFORM',
     'PLATFORMEXCLUDE',
     'POLICER',
+    'POLICE_KBPS',
+    'POLICE_BURST',
+    'POLICE_PPS',
     'PORT',
+    'PORT_MIRROR',
     'PRECEDENCE',
     'PRIORITY',
     'PROTOCOL',
@@ -1714,20 +2066,26 @@ tokens = (
     'SADDR',
     'SADDREXCLUDE',
     'SINTERFACE',
+    'SOURCE_SERVICE_ACCOUNTS',
     'SPFX',
     'ESPFX',
     'SPORT',
+    'SZONE',
     'STAG',
+    'SOURCE_SECURE_TAGS',
+    'DESTINATION_SECURE_TAGS',
     'STRING',
     'TARGET',
     'TARGET_RESOURCES',
     'TARGET_SERVICE_ACCOUNTS',
     'TERM',
     'TIMEOUT',
+    'TRAFFIC_CLASS',
     'TRAFFIC_CLASS_COUNT',
     'TRAFFIC_TYPE',
     'TTL',
     'VERBATIM',
+    'VERSA_APPLICATION',
     'VPN',
 )
 
@@ -1742,22 +2100,29 @@ reserved = {
     'action': 'ACTION',
     'address': 'ADDR',
     'address-exclude': 'ADDREXCLUDE',
+    'restrict-address-family': 'RESTRICT_ADDRESS_FAMILY',
     'comment': 'COMMENT',
     'counter': 'COUNTER',
+    'decapsulate': 'DECAPSULATE',
     'destination-address': 'DADDR',
     'destination-exclude': 'DADDREXCLUDE',
     'destination-interface': 'DINTERFACE',
     'destination-prefix': 'DPFX',
     'destination-prefix-except': 'EDPFX',
     'destination-port': 'DPORT',
+    'destination-self': 'DESTINATION_SELF',
     'destination-tag': 'DTAG',
+    'destination-secure-tag': 'DESTINATION_SECURE_TAGS',
+    'destination-zone': 'DZONE',
     'dscp-except': 'DSCP_EXCEPT',
     'dscp-match': 'DSCP_MATCH',
     'dscp-set': 'DSCP_SET',
     'encapsulate': 'ENCAPSULATE',
     'ether-type': 'ETHER_TYPE',
     'expiration': 'EXPIRATION',
+    'filter-term': 'FILTER_TERM',
     'flexible-match-range': 'FLEXIBLE_MATCH_RANGE',
+    'fortigate-application-id': 'FORTIGATE_APPLICATION_ID',
     'forwarding-class': 'FORWARDING_CLASS',
     'forwarding-class-except': 'FORWARDING_CLASS_EXCEPT',
     'fragment-offset': 'FRAGMENT_OFFSET',
@@ -1773,13 +2138,19 @@ reserved = {
     'log_name': 'LOG_NAME',
     'loss-priority': 'LOSS_PRIORITY',
     'next-ip': 'NEXT_IP',
+    'next-interface': 'NEXT_INTERFACE',
+    'next-hop-group': 'NEXT_HOP_GROUP',
     'option': 'OPTION',
     'owner': 'OWNER',
     'packet-length': 'PACKET_LEN',
     'platform': 'PLATFORM',
     'platform-exclude': 'PLATFORMEXCLUDE',
     'policer': 'POLICER',
+    'police-kbps': 'POLICE_KBPS',
+    'police-burst': 'POLICE_BURST',
+    'police-pps': 'POLICE_PPS',
     'port': 'PORT',
+    'port-mirror': 'PORT_MIRROR',
     'precedence': 'PRECEDENCE',
     'priority': 'PRIORITY',
     'protocol': 'PROTOCOL',
@@ -1790,19 +2161,24 @@ reserved = {
     'source-address': 'SADDR',
     'source-exclude': 'SADDREXCLUDE',
     'source-interface': 'SINTERFACE',
+    'source-service-accounts': 'SOURCE_SERVICE_ACCOUNTS',
     'source-prefix': 'SPFX',
     'source-prefix-except': 'ESPFX',
     'source-port': 'SPORT',
     'source-tag': 'STAG',
+    'source-secure-tag': 'SOURCE_SECURE_TAGS',
+    'source-zone': 'SZONE',
     'target': 'TARGET',
     'target-resources': 'TARGET_RESOURCES',
     'target-service-accounts': 'TARGET_SERVICE_ACCOUNTS',
     'term': 'TERM',
     'timeout': 'TIMEOUT',
+    'traffic-class': 'TRAFFIC_CLASS',
     'traffic-class-count': 'TRAFFIC_CLASS_COUNT',
     'traffic-type': 'TRAFFIC_TYPE',
     'ttl': 'TTL',
     'verbatim': 'VERBATIM',
+    'versa-application': 'VERSA_APPLICATION',
     'vpn': 'VPN',
 }
 
@@ -1876,8 +2252,10 @@ def t_STRING(t):
 ## parser starts here
 ###
 def p_target(p):
-  """ target : target header terms
-             | """
+  """target : target header terms
+
+  |
+  """
   if len(p) > 1:
     if type(p[1]) is Policy:
       p[1].AddFilter(p[2], p[3])
@@ -1887,16 +2265,18 @@ def p_target(p):
 
 
 def p_header(p):
-  """ header : HEADER '{' header_spec '}' """
+  """header : HEADER '{' header_spec '}'"""
   p[0] = p[3]
 
 
 def p_header_spec(p):
-  """ header_spec : header_spec target_spec
-                  | header_spec comment_spec
-                  | header_spec apply_groups_spec
-                  | header_spec apply_groups_except_spec
-                  | """
+  """header_spec : header_spec target_spec
+
+  | header_spec comment_spec
+  | header_spec apply_groups_spec
+  | header_spec apply_groups_except_spec
+  |
+  """
   if len(p) > 1:
     if type(p[1]) == Header:
       p[1].AddObject(p[2])
@@ -1909,13 +2289,15 @@ def p_header_spec(p):
 # we may want to change this at some point if we want to be clever with things
 # like being able to set a default input/output policy for iptables policies.
 def p_target_spec(p):
-  """ target_spec : TARGET ':' ':' strings_or_ints """
+  """target_spec : TARGET ':' ':' strings_or_ints"""
   p[0] = Target(p[4])
 
 
 def p_terms(p):
-  """ terms : terms TERM STRING '{' term_spec '}'
-            | """
+  """terms : terms TERM STRING '{' term_spec '}'
+
+  |
+  """
   if len(p) > 1:
     p[5].name = p[3]
     if type(p[1]) == list:
@@ -1926,53 +2308,70 @@ def p_terms(p):
 
 
 def p_term_spec(p):
-  """ term_spec : term_spec action_spec
-                | term_spec addr_spec
-                | term_spec comment_spec
-                | term_spec counter_spec
-                | term_spec traffic_class_count_spec
-                | term_spec dscp_set_spec
-                | term_spec dscp_match_spec
-                | term_spec dscp_except_spec
-                | term_spec encapsulate_spec
-                | term_spec ether_type_spec
-                | term_spec exclude_spec
-                | term_spec expiration_spec
-                | term_spec flexible_match_range_spec
-                | term_spec forwarding_class_spec
-                | term_spec forwarding_class_except_spec
-                | term_spec fragment_offset_spec
-                | term_spec hop_limit_spec
-                | term_spec icmp_type_spec
-                | term_spec icmp_code_spec
-                | term_spec interface_spec
-                | term_spec logging_spec
-                | term_spec log_limit_spec
-                | term_spec log_name_spec
-                | term_spec losspriority_spec
-                | term_spec next_ip_spec
-                | term_spec option_spec
-                | term_spec owner_spec
-                | term_spec packet_length_spec
-                | term_spec platform_spec
-                | term_spec policer_spec
-                | term_spec port_spec
-                | term_spec precedence_spec
-                | term_spec priority_spec
-                | term_spec prefix_list_spec
-                | term_spec protocol_spec
-                | term_spec qos_spec
-                | term_spec pan_application_spec
-                | term_spec routinginstance_spec
-                | term_spec tag_list_spec
-                | term_spec target_resources_spec
-                | term_spec target_service_accounts_spec
-                | term_spec timeout_spec
-                | term_spec ttl_spec
-                | term_spec traffic_type_spec
-                | term_spec verbatim_spec
-                | term_spec vpn_spec
-                | """
+  """term_spec : term_spec action_spec
+
+  | term_spec addr_spec
+  | term_spec destination_self_spec
+  | term_spec restrict_address_family_spec
+  | term_spec comment_spec
+  | term_spec counter_spec
+  | term_spec traffic_class_count_spec
+  | term_spec dscp_set_spec
+  | term_spec dscp_match_spec
+  | term_spec dscp_except_spec
+  | term_spec decapsulate_spec
+  | term_spec encapsulate_spec
+  | term_spec ether_type_spec
+  | term_spec exclude_spec
+  | term_spec expiration_spec
+  | term_spec filter_term_spec
+  | term_spec flexible_match_range_spec
+  | term_spec forwarding_class_spec
+  | term_spec forwarding_class_except_spec
+  | term_spec fragment_offset_spec
+  | term_spec hop_limit_spec
+  | term_spec icmp_type_spec
+  | term_spec icmp_code_spec
+  | term_spec interface_spec
+  | term_spec logging_spec
+  | term_spec log_limit_spec
+  | term_spec log_name_spec
+  | term_spec losspriority_spec
+  | term_spec next_ip_spec
+  | term_spec next_interface_spec
+  | term_spec next_hop_group_spec
+  | term_spec option_spec
+  | term_spec owner_spec
+  | term_spec packet_length_spec
+  | term_spec platform_spec
+  | term_spec policer_spec
+  | term_spec port_spec
+  | term_spec police_kbps_spec
+  | term_spec police_burst_spec
+  | term_spec police_pps_spec
+  | term_spec port_mirror_spec
+  | term_spec precedence_spec
+  | term_spec priority_spec
+  | term_spec prefix_list_spec
+  | term_spec protocol_spec
+  | term_spec qos_spec
+  | term_spec pan_application_spec
+  | term_spec fortigate_application_id_spec
+  | term_spec routinginstance_spec
+  | term_spec source_service_accounts_spec
+  | term_spec term_zone_spec
+  | term_spec tag_list_spec
+  | term_spec target_resources_spec
+  | term_spec target_service_accounts_spec
+  | term_spec timeout_spec
+  | term_spec ttl_spec
+  | term_spec traffic_class_spec
+  | term_spec traffic_type_spec
+  | term_spec verbatim_spec
+  | term_spec versa_application_spec
+  | term_spec vpn_spec
+  |
+  """
   if len(p) > 1:
     if type(p[1]) == Term:
       p[1].AddObject(p[2])
@@ -1981,36 +2380,43 @@ def p_term_spec(p):
       p[0] = Term(p[2])
 
 
+def p_restrict_address_family_spec(p):
+  """restrict_address_family_spec : RESTRICT_ADDRESS_FAMILY ':' ':' STRING"""
+  p[0] = VarType(VarType.RESTRICT_ADDRESS_FAMILY, p[4])
+
+
 def p_routinginstance_spec(p):
-  """ routinginstance_spec : ROUTING_INSTANCE ':' ':' STRING """
+  """routinginstance_spec : ROUTING_INSTANCE ':' ':' STRING"""
   p[0] = VarType(VarType.ROUTING_INSTANCE, p[4])
 
 
 def p_losspriority_spec(p):
-  """ losspriority_spec :  LOSS_PRIORITY ':' ':' STRING """
+  """losspriority_spec :  LOSS_PRIORITY ':' ':' STRING"""
   p[0] = VarType(VarType.LOSS_PRIORITY, p[4])
 
 
 def p_precedence_spec(p):
-  """ precedence_spec : PRECEDENCE ':' ':' one_or_more_ints """
+  """precedence_spec : PRECEDENCE ':' ':' one_or_more_ints"""
   p[0] = VarType(VarType.PRECEDENCE, p[4])
 
 
 def p_flexible_match_range_spec(p):
-  """ flexible_match_range_spec : FLEXIBLE_MATCH_RANGE ':' ':' flex_match_key_values """
+  """flexible_match_range_spec : FLEXIBLE_MATCH_RANGE ':' ':' flex_match_key_values"""
   p[0] = []
   for kv in p[4]:
     p[0].append(VarType(VarType.FLEXIBLE_MATCH_RANGE, kv))
 
 
 def p_flex_match_key_values(p):
-  """ flex_match_key_values : flex_match_key_values STRING HEX
-                            | flex_match_key_values STRING INTEGER
-                            | flex_match_key_values STRING STRING
-                            | STRING HEX
-                            | STRING INTEGER
-                            | STRING STRING
-                            | """
+  """flex_match_key_values : flex_match_key_values STRING HEX
+
+  | flex_match_key_values STRING INTEGER
+  | flex_match_key_values STRING STRING
+  | STRING HEX
+  | STRING INTEGER
+  | STRING STRING
+  |
+  """
   if len(p) < 1:
     return
 
@@ -2039,44 +2445,69 @@ def p_flex_match_key_values(p):
 
 
 def p_forwarding_class_spec(p):
-  """ forwarding_class_spec : FORWARDING_CLASS ':' ':' one_or_more_strings """
+  """forwarding_class_spec : FORWARDING_CLASS ':' ':' one_or_more_strings"""
   p[0] = []
   for fclass in p[4]:
     p[0].append(VarType(VarType.FORWARDING_CLASS, fclass))
 
 
 def p_forwarding_class_except_spec(p):
-  """ forwarding_class_except_spec : FORWARDING_CLASS_EXCEPT ':' ':' one_or_more_strings """
+  """forwarding_class_except_spec : FORWARDING_CLASS_EXCEPT ':' ':' one_or_more_strings"""
   p[0] = []
   for fclass in p[4]:
     p[0].append(VarType(VarType.FORWARDING_CLASS_EXCEPT, fclass))
 
 
 def p_next_ip_spec(p):
-  """ next_ip_spec : NEXT_IP ':' ':' STRING """
+  """next_ip_spec : NEXT_IP ':' ':' STRING"""
   p[0] = VarType(VarType.NEXT_IP, p[4])
 
 
+def p_next_interface_spec(p):
+  """next_interface_spec : NEXT_INTERFACE ':' ':' STRING"""
+  p[0] = VarType(VarType.NEXT_INTERFACE, p[4])
+
+
+def p_next_hop_group_spec(p):
+  """next_hop_group_spec : NEXT_HOP_GROUP ':' ':' STRING"""
+  p[0] = VarType(VarType.NEXT_HOP_GROUP, p[4])
+
+
 def p_encapsulate_spec(p):
-  """ encapsulate_spec : ENCAPSULATE ':' ':' STRING """
+  """encapsulate_spec : ENCAPSULATE ':' ':' STRING"""
   p[0] = VarType(VarType.ENCAPSULATE, p[4])
 
 
+def p_decapsulate_spec(p):
+  """decapsulate_spec : DECAPSULATE ':' ':' STRING"""
+  p[0] = VarType(VarType.DECAPSULATE, p[4])
+
+
+def p_port_mirror_spec(p):
+  """port_mirror_spec : PORT_MIRROR ':' ':' STRING"""
+  p[0] = VarType(VarType.PORT_MIRROR, p[4])
+
+
 def p_icmp_type_spec(p):
-  """ icmp_type_spec : ICMP_TYPE ':' ':' one_or_more_strings """
+  """icmp_type_spec : ICMP_TYPE ':' ':' one_or_more_strings"""
   p[0] = VarType(VarType.ICMP_TYPE, p[4])
 
+
 def p_icmp_code_spec(p):
-  """ icmp_code_spec : ICMP_CODE ':' ':' one_or_more_ints """
+  """icmp_code_spec : ICMP_CODE ':' ':' one_or_more_ints"""
   p[0] = VarType(VarType.ICMP_CODE, p[4])
 
+
 def p_priority_spec(p):
-  """ priority_spec : PRIORITY ':' ':' INTEGER """
+  """priority_spec : PRIORITY ':' ':' INTEGER"""
   p[0] = VarType(VarType.PRIORITY, p[4])
 
+
 def p_packet_length_spec(p):
-  """ packet_length_spec : PACKET_LEN ':' ':' INTEGER
-                         | PACKET_LEN ':' ':' INTEGER '-' INTEGER """
+  """packet_length_spec : PACKET_LEN ':' ':' INTEGER
+
+  | PACKET_LEN ':' ':' INTEGER '-' INTEGER
+  """
   if len(p) == 5:
     p[0] = VarType(VarType.PACKET_LEN, str(p[4]))
   else:
@@ -2084,8 +2515,10 @@ def p_packet_length_spec(p):
 
 
 def p_fragment_offset_spec(p):
-  """ fragment_offset_spec : FRAGMENT_OFFSET ':' ':' INTEGER
-                           | FRAGMENT_OFFSET ':' ':' INTEGER '-' INTEGER """
+  """fragment_offset_spec : FRAGMENT_OFFSET ':' ':' INTEGER
+
+  | FRAGMENT_OFFSET ':' ':' INTEGER '-' INTEGER
+  """
   if len(p) == 5:
     p[0] = VarType(VarType.FRAGMENT_OFFSET, str(p[4]))
   else:
@@ -2093,8 +2526,10 @@ def p_fragment_offset_spec(p):
 
 
 def p_hop_limit_spec(p):
-  """ hop_limit_spec : HOP_LIMIT ':' ':' INTEGER
-                     | HOP_LIMIT ':' ':' INTEGER '-' INTEGER """
+  """hop_limit_spec : HOP_LIMIT ':' ':' INTEGER
+
+  | HOP_LIMIT ':' ':' INTEGER '-' INTEGER
+  """
   if len(p) == 5:
     p[0] = VarType(VarType.HOP_LIMIT, str(p[4]))
   else:
@@ -2102,12 +2537,14 @@ def p_hop_limit_spec(p):
 
 
 def p_one_or_more_dscps(p):
-  """ one_or_more_dscps : one_or_more_dscps DSCP_RANGE
-                        | one_or_more_dscps DSCP
-                        | one_or_more_dscps INTEGER
-                        | DSCP_RANGE
-                        | DSCP
-                        | INTEGER """
+  """one_or_more_dscps : one_or_more_dscps DSCP_RANGE
+
+  | one_or_more_dscps DSCP
+  | one_or_more_dscps INTEGER
+  | DSCP_RANGE
+  | DSCP
+  | INTEGER
+  """
   if len(p) > 1:
     if type(p[1]) is list:
       p[1].append(p[2])
@@ -2117,30 +2554,39 @@ def p_one_or_more_dscps(p):
 
 
 def p_dscp_set_spec(p):
-  """ dscp_set_spec : DSCP_SET ':' ':' DSCP
-                    | DSCP_SET ':' ':' INTEGER """
+  """dscp_set_spec : DSCP_SET ':' ':' DSCP
+
+  | DSCP_SET ':' ':' INTEGER
+  """
   p[0] = VarType(VarType.DSCP_SET, p[4])
 
 
 def p_dscp_match_spec(p):
-  """ dscp_match_spec : DSCP_MATCH ':' ':' one_or_more_dscps """
+  """dscp_match_spec : DSCP_MATCH ':' ':' one_or_more_dscps"""
   p[0] = []
   for dscp in p[4]:
     p[0].append(VarType(VarType.DSCP_MATCH, dscp))
 
 
 def p_dscp_except_spec(p):
-  """ dscp_except_spec : DSCP_EXCEPT ':' ':' one_or_more_dscps """
+  """dscp_except_spec : DSCP_EXCEPT ':' ':' one_or_more_dscps"""
   p[0] = []
   for dscp in p[4]:
     p[0].append(VarType(VarType.DSCP_EXCEPT, dscp))
 
 
+def p_destination_self_spec(p):
+  """destination_self_spec : DESTINATION_SELF ':' ':' STRING"""
+  p[0] = VarType(VarType.DESTINATION_SELF, p[4])
+
+
 def p_exclude_spec(p):
-  """ exclude_spec : SADDREXCLUDE ':' ':' one_or_more_strings
-                   | DADDREXCLUDE ':' ':' one_or_more_strings
-                   | ADDREXCLUDE ':' ':' one_or_more_strings
-                   | PROTOCOL_EXCEPT ':' ':' one_or_more_strings """
+  """exclude_spec : SADDREXCLUDE ':' ':' one_or_more_strings
+
+  | DADDREXCLUDE ':' ':' one_or_more_strings
+  | ADDREXCLUDE ':' ':' one_or_more_strings
+  | PROTOCOL_EXCEPT ':' ':' one_or_more_strings
+  """
 
   p[0] = []
   for ex in p[4]:
@@ -2155,10 +2601,12 @@ def p_exclude_spec(p):
 
 
 def p_prefix_list_spec(p):
-  """ prefix_list_spec : DPFX ':' ':' one_or_more_strings
-                       | EDPFX ':' ':' one_or_more_strings
-                       | SPFX ':' ':' one_or_more_strings
-                       | ESPFX ':' ':' one_or_more_strings """
+  """prefix_list_spec : DPFX ':' ':' one_or_more_strings
+
+  | EDPFX ':' ':' one_or_more_strings
+  | SPFX ':' ':' one_or_more_strings
+  | ESPFX ':' ':' one_or_more_strings
+  """
   p[0] = []
   for pfx in p[4]:
     if p[1].find('source-prefix-except') >= 0:
@@ -2172,9 +2620,11 @@ def p_prefix_list_spec(p):
 
 
 def p_addr_spec(p):
-  """ addr_spec : SADDR ':' ':' one_or_more_strings
-                | DADDR ':' ':' one_or_more_strings
-                | ADDR  ':' ':' one_or_more_strings """
+  """addr_spec : SADDR ':' ':' one_or_more_strings
+
+  | DADDR ':' ':' one_or_more_strings
+  | ADDR  ':' ':' one_or_more_strings
+  """
   p[0] = []
   for addr in p[4]:
     if p[1].find('source-address') >= 0:
@@ -2186,9 +2636,11 @@ def p_addr_spec(p):
 
 
 def p_port_spec(p):
-  """ port_spec : SPORT ':' ':' one_or_more_strings
-                | DPORT ':' ':' one_or_more_strings
-                | PORT ':' ':' one_or_more_strings """
+  """port_spec : SPORT ':' ':' one_or_more_strings
+
+  | DPORT ':' ':' one_or_more_strings
+  | PORT ':' ':' one_or_more_strings
+  """
   p[0] = []
   for port in p[4]:
     if p[1].find('source-port') >= 0:
@@ -2200,150 +2652,219 @@ def p_port_spec(p):
 
 
 def p_protocol_spec(p):
-  """ protocol_spec : PROTOCOL ':' ':' strings_or_ints """
+  """protocol_spec : PROTOCOL ':' ':' strings_or_ints"""
   p[0] = []
   for proto in p[4]:
     p[0].append(VarType(VarType.PROTOCOL, proto))
 
 
+def p_source_service_accounts_spec(p):
+  """source_service_accounts_spec : SOURCE_SERVICE_ACCOUNTS ':' ':' one_or_more_strings"""
+  p[0] = []
+  for service_account in p[4]:
+    p[0].append(VarType(VarType.SOURCE_SERVICE_ACCOUNTS, service_account))
+
+
 def p_tag_list_spec(p):
-  """ tag_list_spec : DTAG ':' ':' one_or_more_strings
-                    | STAG ':' ':' one_or_more_strings """
+  """tag_list_spec : DTAG ':' ':' one_or_more_strings
+
+  | STAG ':' ':' one_or_more_strings
+  | DESTINATION_SECURE_TAGS ':' ':' one_or_more_strings
+  | SOURCE_SECURE_TAGS ':' ':' one_or_more_strings
+  """
   p[0] = []
   for tag in p[4]:
-    if p[1].find('source-tag') >= 0:
+    if p[1].find('source-secure-tag') >= 0:
+      p[0].append(VarType(VarType.SOURCE_SECURE_TAGS, tag))
+    elif p[1].find('destination-secure-tag') >= 0:
+      p[0].append(VarType(VarType.DESTINATION_SECURE_TAGS, tag))
+    elif p[1].find('source-tag') >= 0:
       p[0].append(VarType(VarType.STAG, tag))
     elif p[1].find('destination-tag') >= 0:
       p[0].append(VarType(VarType.DTAG, tag))
 
 
 def p_target_resources_spec(p):
-  """ target_resources_spec : TARGET_RESOURCES ':' ':' one_or_more_tuples
-  """
+  """target_resources_spec : TARGET_RESOURCES ':' ':' one_or_more_tuples"""
   p[0] = []
   for target_resource in p[4]:
     p[0].append(VarType(VarType.TARGET_RESOURCES, target_resource))
 
 
 def p_target_service_accounts_spec(p):
-  """ target_service_accounts_spec : TARGET_SERVICE_ACCOUNTS ':' ':' one_or_more_strings """
+  """target_service_accounts_spec : TARGET_SERVICE_ACCOUNTS ':' ':' one_or_more_strings"""
   p[0] = []
   for service_account in p[4]:
     p[0].append(VarType(VarType.TARGET_SERVICE_ACCOUNTS, service_account))
 
 
 def p_ether_type_spec(p):
-  """ ether_type_spec : ETHER_TYPE ':' ':' one_or_more_strings """
+  """ether_type_spec : ETHER_TYPE ':' ':' one_or_more_strings"""
   p[0] = []
   for proto in p[4]:
     p[0].append(VarType(VarType.ETHER_TYPE, proto))
 
 
 def p_traffic_type_spec(p):
-  """ traffic_type_spec : TRAFFIC_TYPE ':' ':' one_or_more_strings """
+  """traffic_type_spec : TRAFFIC_TYPE ':' ':' one_or_more_strings"""
   p[0] = []
   for proto in p[4]:
     p[0].append(VarType(VarType.TRAFFIC_TYPE, proto))
 
 
 def p_policer_spec(p):
-  """ policer_spec : POLICER ':' ':' STRING """
+  """policer_spec : POLICER ':' ':' STRING"""
   p[0] = VarType(VarType.POLICER, p[4])
 
 
+def p_police_kbps_spec(p):
+  """police_kbps_spec : POLICE_KBPS ':' ':' INTEGER"""
+  p[0] = VarType(VarType.POLICE_KBPS, p[4])
+
+
+def p_police_burst_spec(p):
+  """police_burst_spec : POLICE_BURST ':' ':' INTEGER"""
+  p[0] = VarType(VarType.POLICE_BURST, p[4])
+
+
+def p_police_pps_spec(p):
+  """police_pps_spec : POLICE_PPS ':' ':' INTEGER"""
+  p[0] = VarType(VarType.POLICE_PPS, p[4])
+
+
 def p_logging_spec(p):
-  """ logging_spec : LOGGING ':' ':' STRING """
+  """logging_spec : LOGGING ':' ':' STRING"""
   p[0] = VarType(VarType.LOGGING, p[4])
 
 
 def p_log_limit_spec(p):
-  """ log_limit_spec : LOG_LIMIT ':' ':' INTEGER '/' STRING"""
+  """log_limit_spec : LOG_LIMIT ':' ':' INTEGER '/' STRING"""
   p[0] = VarType(VarType.LOG_LIMIT, (p[4], p[6]))
 
 
 def p_log_name_spec(p):
-  """ log_name_spec : LOG_NAME ':' ':' DQUOTEDSTRING """
+  """log_name_spec : LOG_NAME ':' ':' DQUOTEDSTRING"""
   p[0] = VarType(VarType.LOG_NAME, p[4])
 
 
 def p_option_spec(p):
-  """ option_spec : OPTION ':' ':' one_or_more_strings """
+  """option_spec : OPTION ':' ':' one_or_more_strings"""
   p[0] = []
   for opt in p[4]:
     p[0].append(VarType(VarType.OPTION, opt))
 
 
 def p_action_spec(p):
-  """ action_spec : ACTION ':' ':' STRING """
+  """action_spec : ACTION ':' ':' STRING"""
   p[0] = VarType(VarType.ACTION, p[4])
 
 
 def p_counter_spec(p):
-  """ counter_spec : COUNTER ':' ':' STRING """
+  """counter_spec : COUNTER ':' ':' STRING"""
   p[0] = VarType(VarType.COUNTER, p[4])
 
 
 def p_traffic_class_count_spec(p):
-  """ traffic_class_count_spec : TRAFFIC_CLASS_COUNT ':' ':' STRING """
+  """traffic_class_count_spec : TRAFFIC_CLASS_COUNT ':' ':' STRING"""
   p[0] = VarType(VarType.TRAFFIC_CLASS_COUNT, p[4])
 
 
 def p_expiration_spec(p):
-  """ expiration_spec : EXPIRATION ':' ':' INTEGER '-' INTEGER '-' INTEGER """
-  p[0] = VarType(VarType.EXPIRATION, datetime.date(int(p[4]),
-                                                   int(p[6]),
-                                                   int(p[8])))
+  """expiration_spec : EXPIRATION ':' ':' INTEGER '-' INTEGER '-' INTEGER"""
+  p[0] = VarType(
+      VarType.EXPIRATION, datetime.date(int(p[4]), int(p[6]), int(p[8]))
+  )
 
 
 def p_comment_spec(p):
-  """ comment_spec : COMMENT ':' ':' DQUOTEDSTRING """
+  """comment_spec : COMMENT ':' ':' DQUOTEDSTRING"""
   p[0] = VarType(VarType.COMMENT, p[4])
 
 
 def p_owner_spec(p):
-  """ owner_spec : OWNER ':' ':' STRING """
+  """owner_spec : OWNER ':' ':' STRING"""
   p[0] = VarType(VarType.OWNER, p[4])
 
 
 def p_verbatim_spec(p):
-  """ verbatim_spec : VERBATIM ':' ':' STRING DQUOTEDSTRING
-                    | VERBATIM ':' ':' STRING ESCAPEDSTRING """
+  """verbatim_spec : VERBATIM ':' ':' STRING DQUOTEDSTRING
+
+  | VERBATIM ':' ':' STRING ESCAPEDSTRING
+  """
   p[0] = VarType(VarType.VERBATIM, [p[4], p[5].strip('"').replace('\\"', '"')])
 
 
+def p_term_zone_spec(p):
+  """term_zone_spec : SZONE ':' ':' one_or_more_strings
+
+  | DZONE ':' ':' one_or_more_strings
+  """
+  p[0] = []
+  for zone in p[4]:
+    if p[1].find('source-zone') >= 0:
+      p[0].append(VarType(VarType.SZONE, zone))
+    elif p[1].find('destination-zone') >= 0:
+      p[0].append(VarType(VarType.DZONE, zone))
+
+
 def p_vpn_spec(p):
-  """ vpn_spec : VPN ':' ':' STRING STRING
-               | VPN ':' ':' STRING """
+  """vpn_spec : VPN ':' ':' STRING STRING
+
+  | VPN ':' ':' STRING
+  """
   if len(p) == 6:
     p[0] = VarType(VarType.VPN, [p[4], p[5]])
   else:
     p[0] = VarType(VarType.VPN, [p[4], ''])
 
 
+def p_versa_application_spec(p):
+  """versa_application_spec : VERSA_APPLICATION ':' ':' one_or_more_strings"""
+  p[0] = []
+  for apps in p[4]:
+    p[0].append(VarType(VarType.VERSA_APPLICATION, apps))
+
+
 def p_qos_spec(p):
-  """ qos_spec : QOS ':' ':' STRING """
+  """qos_spec : QOS ':' ':' STRING"""
   p[0] = VarType(VarType.QOS, p[4])
 
 
+def p_traffic_class_spec(p):
+  """traffic_class_spec : TRAFFIC_CLASS ':' ':' INTEGER"""
+  p[0] = VarType(VarType.TRAFFIC_CLASS, p[4])
+
+
 def p_pan_application_spec(p):
-  """ pan_application_spec : PAN_APPLICATION ':' ':' one_or_more_strings """
+  """pan_application_spec : PAN_APPLICATION ':' ':' one_or_more_strings"""
   p[0] = []
   for apps in p[4]:
     p[0].append(VarType(VarType.PAN_APPLICATION, apps))
 
 
+def p_fortigate_application_id_spec(p):
+  """ fortigate_application_id_spec : FORTIGATE_APPLICATION_ID ':' ':' one_or_more_ints """
+  p[0] = []
+  for apps in p[4]:
+    p[0].append(VarType(VarType.FORTIGATE_APPLICATION_ID, apps))
+
+
 def p_interface_spec(p):
-  """ interface_spec : SINTERFACE ':' ':' STRING
-                     | DINTERFACE ':' ':' STRING """
+  """interface_spec : SINTERFACE ':' ':' STRING
+
+  | DINTERFACE ':' ':' STRING
+  """
   if p[1].find('source-interface') >= 0:
     p[0] = VarType(VarType.SINTERFACE, p[4])
-  elif p[1].find('destination-interface') >= 0:
+  if p[1].find('destination-interface') >= 0:
     p[0] = VarType(VarType.DINTERFACE, p[4])
 
 
 def p_platform_spec(p):
-  """ platform_spec : PLATFORM ':' ':' one_or_more_strings
-                    | PLATFORMEXCLUDE ':' ':' one_or_more_strings """
+  """platform_spec : PLATFORM ':' ':' one_or_more_strings
+
+  | PLATFORMEXCLUDE ':' ':' one_or_more_strings
+  """
   p[0] = []
   for platform in p[4]:
     if p[1].find('platform-exclude') >= 0:
@@ -2353,34 +2874,40 @@ def p_platform_spec(p):
 
 
 def p_apply_groups_spec(p):
-  """ apply_groups_spec : APPLY_GROUPS ':' ':' one_or_more_strings """
+  """apply_groups_spec : APPLY_GROUPS ':' ':' one_or_more_strings"""
   p[0] = []
   for group in p[4]:
     p[0].append(VarType(VarType.APPLY_GROUPS, group))
 
 
 def p_apply_groups_except_spec(p):
-  """ apply_groups_except_spec : APPLY_GROUPS_EXCEPT ':' ':' one_or_more_strings
-  """
+  """apply_groups_except_spec : APPLY_GROUPS_EXCEPT ':' ':' one_or_more_strings"""
   p[0] = []
   for group_except in p[4]:
     p[0].append(VarType(VarType.APPLY_GROUPS_EXCEPT, group_except))
 
 
 def p_timeout_spec(p):
-  """ timeout_spec : TIMEOUT ':' ':' INTEGER """
+  """timeout_spec : TIMEOUT ':' ':' INTEGER"""
   p[0] = VarType(VarType.TIMEOUT, p[4])
 
 
 def p_ttl_spec(p):
-  """ ttl_spec : TTL ':' ':' INTEGER """
+  """ttl_spec : TTL ':' ':' INTEGER"""
   p[0] = VarType(VarType.TTL, p[4])
 
 
+def p_filter_term_spec(p):
+  """filter_term_spec : FILTER_TERM ':' ':' STRING"""
+  p[0] = VarType(VarType.FILTER_TERM, p[4])
+
+
 def p_one_or_more_strings(p):
-  """ one_or_more_strings : one_or_more_strings STRING
-                          | STRING
-                          | """
+  """one_or_more_strings : one_or_more_strings STRING
+
+  | STRING
+  |
+  """
   if len(p) > 1:
     if type(p[1]) == type([]):
       p[1].append(p[2])
@@ -2388,12 +2915,15 @@ def p_one_or_more_strings(p):
     else:
       p[0] = [p[1]]
 
+
 def p_one_or_more_tuples(p):
-  """ one_or_more_tuples : LSQUARE one_or_more_tuples RSQUARE
-                         | one_or_more_tuples ',' one_tuple
-                         | one_or_more_tuples one_tuple
-                         | one_tuple
-                         | """
+  """one_or_more_tuples : LSQUARE one_or_more_tuples RSQUARE
+
+  | one_or_more_tuples ',' one_tuple
+  | one_or_more_tuples one_tuple
+  | one_tuple
+  |
+  """
 
   if len(p) > 1:
     if p[1] == '[':
@@ -2409,15 +2939,19 @@ def p_one_or_more_tuples(p):
 
 
 def p_one_tuple(p):
-  """ one_tuple : LPAREN STRING ',' STRING RPAREN
-                | """
+  """one_tuple : LPAREN STRING ',' STRING RPAREN
+
+  |
+  """
   p[0] = (p[2], p[4])
 
 
 def p_one_or_more_ints(p):
-  """ one_or_more_ints : one_or_more_ints INTEGER
-                      | INTEGER
-                      | """
+  """one_or_more_ints : one_or_more_ints INTEGER
+
+  | INTEGER
+  |
+  """
   if len(p) > 1:
     if type(p[1]) == type([]):
       p[1].append(int(p[2]))
@@ -2427,11 +2961,13 @@ def p_one_or_more_ints(p):
 
 
 def p_strings_or_ints(p):
-  """ strings_or_ints : strings_or_ints STRING
-                      | strings_or_ints INTEGER
-                      | STRING
-                      | INTEGER
-                      | """
+  """strings_or_ints : strings_or_ints STRING
+
+  | strings_or_ints INTEGER
+  | STRING
+  | INTEGER
+  |
+  """
   if len(p) > 1:
     if type(p[1]) is list:
       p[1].append(p[2])
@@ -2442,7 +2978,6 @@ def p_strings_or_ints(p):
 
 def p_error(p):
   """."""
-  global parser
   next_token = parser.token()
   if next_token is None:
     use_token = 'EOF'
@@ -2450,10 +2985,13 @@ def p_error(p):
     use_token = repr(next_token.value)
 
   if p:
-    raise ParseError(' ERROR on "%s" (type %s, line %d, Next %s)'
-                     % (p.value, p.type, p.lineno, use_token))
+    raise ParseError(
+        ' ERROR on "%s" (type %s, line %d, Next %s)'
+        % (p.value, p.type, p.lineno, use_token)
+    )
   else:
     raise ParseError(' ERROR you likely have unablanaced "{"\'s')
+
 
 parser = yacc.yacc(write_tables=False, debug=0, errorlog=yacc.NullLogger())
 
@@ -2488,6 +3026,25 @@ def _ReadFile(filename):
     raise FileNotFoundError('Unable to open policy file %s' % filename)
 
 
+def _SubDirectory(child, parent):
+  """Returns if the child is a subdirectory of the parent.
+
+  Resolves relative paths, but does not resolve symbolic links.
+
+  Args:
+    child: A presumed child file path string.
+    parent: Base parent path string.
+
+  Returns:
+    A boolean, true if the child is a subdirectory of the parent.
+  """
+  child_path = os.path.abspath(child)
+  parent_path = os.path.abspath(parent)
+  return os.path.commonpath([parent_path, child_path]) == os.path.commonpath(
+      [parent_path]
+  )
+
+
 def _Preprocess(data, max_depth=5, base_dir=''):
   """Search input for include statements and import specified include file.
 
@@ -2504,17 +3061,26 @@ def _Preprocess(data, max_depth=5, base_dir=''):
 
   Raises:
     RecursionTooDeepError: nested include files exceed maximum
+    InvalidIncludeDirectoryError: nested include files from invalid directories
   """
   if not max_depth:
-    raise RecursionTooDeepError('%s' % (
-        'Included files exceed maximum recursion depth of %s.' % max_depth))
+    raise RecursionTooDeepError(
+        '%s'
+        % ('Included files exceed maximum recursion depth of %s.' % max_depth)
+    )
   rval = []
   for line in [x.rstrip() for x in data.splitlines()]:
     words = line.split()
     if len(words) > 1 and words[0] == '#include':
       # remove any quotes around included filename
       include_file = words[1].strip('\'"')
-      data = _ReadFile(os.path.join(base_dir, include_file))
+      include_file_path = os.path.join(base_dir, include_file)
+      if not _SubDirectory(include_file_path, base_dir):
+        raise InvalidIncludeDirectoryError(
+            '%s'
+            % ('Included file is from invalid directory: %s.' % include_file)
+        )
+      data = _ReadFile(include_file_path)
       # recursively handle includes in included data
       inc_data = _Preprocess(data, max_depth - 1, base_dir=base_dir)
       rval.extend(inc_data)
@@ -2523,8 +3089,9 @@ def _Preprocess(data, max_depth=5, base_dir=''):
   return rval
 
 
-def ParseFile(filename, definitions=None, optimize=True, base_dir='',
-              shade_check=False):
+def ParseFile(
+    filename, definitions=None, optimize=True, base_dir='', shade_check=False
+):
   """Parse the policy contained in file, optionally provide a naming object.
 
   Read specified policy file and parse into a policy object.
@@ -2540,13 +3107,25 @@ def ParseFile(filename, definitions=None, optimize=True, base_dir='',
     policy object or False (if parse error).
   """
   data = _ReadFile(filename)
-  p = ParsePolicy(data, definitions, optimize, base_dir=base_dir,
-                  shade_check=shade_check, filename=filename)
+  p = ParsePolicy(
+      data,
+      definitions,
+      optimize,
+      base_dir=base_dir,
+      shade_check=shade_check,
+      filename=filename,
+  )
   return p
 
 
-def ParsePolicy(data, definitions=None, optimize=True, base_dir='',
-                shade_check=False, filename=''):
+def ParsePolicy(
+    data,
+    definitions=None,
+    optimize=True,
+    base_dir='',
+    shade_check=False,
+    filename='',
+):
   """Parse the policy in 'data', optionally provide a naming object.
 
   Parse a blob of policy text into a policy object.
@@ -2573,7 +3152,6 @@ def ParsePolicy(data, definitions=None, optimize=True, base_dir='',
     lexer = lex.lex()
 
     preprocessed_data = '\n'.join(_Preprocess(data, base_dir=base_dir))
-    global parser
     policy = parser.parse(preprocessed_data, lexer=lexer)
     policy.filename = filename
     return policy
@@ -2590,8 +3168,9 @@ if __name__ == '__main__':
     try:
       ret = ParsePolicy(open(sys.argv[1], 'r').read(), filename=sys.argv[1])
     except IOError:
-      print('ERROR: \'%s\' either does not exist or is not readable' %
-            (sys.argv[1]))
+      print(
+          "ERROR: '%s' either does not exist or is not readable" % (sys.argv[1])
+      )
       ret = 1
   else:
     # default to reading stdin

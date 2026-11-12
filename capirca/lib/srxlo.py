@@ -19,11 +19,6 @@ uses the same syntax as regular Juniper stateless ACLs, with minor
 differences. This subclass effects those differences.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 from capirca.lib import juniper
 
 
@@ -33,13 +28,7 @@ class Term(juniper.Term):
   _PLATFORM = 'srxlo'
 
   def __init__(self, *args, **kwargs):
-    super(Term, self).__init__(*args, **kwargs)
-    self.term.protocol = ['icmp6' if x == 'icmpv6' else x
-                          for x in self.term.protocol]
-
-  def NormalizeIcmpTypes(self, icmp_types, protocols, af):
-    protocols = ['icmpv6' if x == 'icmp6' else x for x in protocols]
-    return super(Term, self).NormalizeIcmpTypes(icmp_types, protocols, af)
+    super().__init__(*args, **kwargs)
 
 
 class SRXlo(juniper.Juniper):
@@ -54,9 +43,13 @@ class SRXlo(juniper.Juniper):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(SRXlo, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
     # flexible match is MX/Trio only
     supported_tokens.remove('flexible_match_range')
     # currently only support 'encapsulate' in juniper
     supported_tokens.remove('encapsulate')
+    # currently only support 'decapsulate' in juniper
+    supported_tokens.remove('decapsulate')
+    # currently only support 'port-mirror' in juniper
+    supported_tokens.remove('port_mirror')
     return supported_tokens, supported_sub_tokens

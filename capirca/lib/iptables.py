@@ -15,11 +15,6 @@
 
 """Iptables generator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import re
 from string import Template  # pylint: disable=g-importing-member
@@ -85,7 +80,7 @@ class Term(aclgenerator.Term):
     Raises:
       UnsupportedFilterError: Filter is not supported.
     """
-    super(Term, self).__init__(term)
+    super().__init__(term)
     self._action_table = {
         'accept': '-j ACCEPT',
         'deny': '-j DROP',
@@ -123,9 +118,11 @@ class Term(aclgenerator.Term):
 
     ret_str = []
 
-    # Don't render icmpv6 protocol terms under inet, or icmp under inet6
-    if ((self.af == 'inet6' and 'icmp' in self.term.protocol) or
-        (self.af == 'inet' and 'icmpv6' in self.term.protocol)):
+    # Keep protocols valid for this family without changing the shared term.
+    excluded_protocol = 'icmp' if self.af == 'inet6' else 'icmpv6'
+    protocol = [proto for proto in self.term.protocol
+                if proto != excluded_protocol]
+    if self.term.protocol and not protocol:
       logging.debug(self.NO_AF_LOG_PROTO.substitute(
           term=self.term.name,
           proto=', '.join(self.term.protocol),
@@ -186,9 +183,7 @@ class Term(aclgenerator.Term):
               self.term.name)
 
     # protocol
-    if self.term.protocol:
-      protocol = self.term.protocol
-    else:
+    if not protocol:
       protocol = ['all']
     if 'hopopt' in protocol and self.af == 'inet':
       logging.warning('Term %s is using hopopt in IPv4 context.',
@@ -646,7 +641,7 @@ class Iptables(aclgenerator.ACLGenerator):
 
   def __init__(self, pol, exp_info):
     self.iptables_policies = []
-    super(Iptables, self).__init__(pol, exp_info)
+    super().__init__(pol, exp_info)
 
   def _BuildTokens(self):
     """Build supported tokens for platform.
@@ -654,8 +649,7 @@ class Iptables(aclgenerator.ACLGenerator):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(
-        Iptables, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
     supported_tokens |= {'counter',
                          'destination_interface',

@@ -14,22 +14,17 @@
 
 """Unit test for Juniper SRX acl rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import copy
 import datetime
 import re
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from capirca.lib import aclgenerator
 from capirca.lib import junipersrx
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
 
 
 GOOD_HEADER = """
@@ -221,6 +216,19 @@ term good-term-5 {
 }
 """
 
+GOOD_TERM_COUNT_1 = """
+term good-term-6 {
+  counter:: good-counter
+  action:: accept
+}
+"""
+GOOD_TERM_COUNT_2 = """
+term good-term-6 {
+  counter:: good-counter
+  action:: deny
+}
+"""
+
 GOOD_TERM_10 = """
 term good-term-10 {
   destination-address:: SOME_HOST
@@ -333,6 +341,12 @@ term good_term_21 {
   destination-address:: FOO
   destination-port:: QUIC
   protocol:: udp
+  action:: accept
+}
+"""
+
+GOOD_TERM_23 = """
+term good_term_23 {
   action:: accept
 }
 """
@@ -505,15 +519,61 @@ term timeout-term {
 }
 """
 
-SUPPORTED_TOKENS = {
+GLOBAL_ZONE_TERM = """
+term global-zone-term {
+  protocol:: icmp
+  icmp-type:: echo-request
+  source-zone:: szone2 szone1
+  destination-zone:: dzone2 dzone1
+  action:: accept
+}
+"""
+
+PLATFORM_EXCLUDE_TERM = """
+term platform-exclude-term {
+  protocol:: tcp udp
+  platform-exclude:: srx
+  action:: accept
+}
+"""
+
+PLATFORM_TERM = """
+term platform-term {
+  protocol:: tcp udp
+  platform:: srx juniper
+  action:: accept
+}
+"""
+
+PLATFORM_EXCLUDE_ADDRESS_TERM = """
+term platform-exclude-term {
+  protocol:: tcp udp
+  source-address:: FOO
+  platform-exclude:: srx
+  action:: accept
+}
+"""
+COUNTER_GOOD_TERM = """
+term counter-term-{counter_num} {{
+  platform:: srx juniper
+  protocol:: tcp
+  counter:: count-name
+  action:: accept
+}}
+"""
+
+SUPPORTED_TOKENS = frozenset({
     'action',
     'comment',
+    'counter',
     'destination_address',
     'destination_address_exclude',
     'destination_port',
+    'destination_zone',
     'dscp_except',
     'dscp_match',
     'dscp_set',
+    'source_zone',
     'expiration',
     'icmp_type',
     'stateless_reply',
@@ -527,11 +587,12 @@ SUPPORTED_TOKENS = {
     'source_address',
     'source_address_exclude',
     'source_port',
+    'target_resources',
     'timeout',
     'translated',
     'verbatim',
     'vpn'
-}
+})
 
 SUPPORTED_SUB_TOKENS = {
     'action': {'accept', 'deny', 'reject', 'count', 'log', 'dscp'},
@@ -576,6 +637,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -593,10 +655,10 @@ _IPSET4 = [nacaddr.IP('10.0.0.0/20')]
 _IPSET5 = [nacaddr.IP('10.0.0.0/24')]
 
 
-class JuniperSRXTest(unittest.TestCase):
+class JuniperSRXTest(absltest.TestCase):
 
   def setUp(self):
-    super(JuniperSRXTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testHeaderComment(self):
@@ -785,6 +847,20 @@ class JuniperSRXTest(unittest.TestCase):
     self.assertIn('session-init;', output)
     self.assertNotIn('session-close;', output)
 
+  def testCounterAccept(self):
+    srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER
+                                                   + GOOD_TERM_COUNT_1,
+                                                   self.naming), EXP_INFO)
+    output = str(srx)
+    self.assertIn('count;', output)
+
+  def testCounterDeny(self):
+    srx = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER
+                                                   + GOOD_TERM_COUNT_2,
+                                                   self.naming), EXP_INFO)
+    output = str(srx)
+    self.assertIn('count;', output)
+
   def testOwnerTerm(self):
     pol = policy.ParsePolicy(GOOD_HEADER + OWNER_TERM, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
@@ -870,7 +946,8 @@ class JuniperSRXTest(unittest.TestCase):
 
   @mock.patch.object(junipersrx.logging, 'info')
   def testExpiringTerm(self, mock_info):
-    exp_date = datetime.date.today() + datetime.timedelta(weeks=EXP_INFO)
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    exp_date = current_date + datetime.timedelta(weeks=EXP_INFO)
     _ = junipersrx.JuniperSRX(policy.ParsePolicy(GOOD_HEADER + EXPIRING_TERM %
                                                  exp_date.strftime('%Y-%m-%d'),
                                                  self.naming), EXP_INFO)
@@ -884,6 +961,19 @@ class JuniperSRXTest(unittest.TestCase):
     pol = policy.ParsePolicy(GOOD_HEADER + TIMEOUT_TERM, self.naming)
     output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
     self.assertIn('timeout 77', output, output)
+
+  def testZoneGlobal(self):
+    pol = policy.ParsePolicy(GOOD_HEADER_10 + GLOBAL_ZONE_TERM, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertIn('from-zone', output, output)
+    self.assertIn('szone1 szone2', output, output)
+    self.assertIn('to-zone', output, output)
+    self.assertIn('dzone1 dzone2', output, output)
+
+  def testZoneNonGlobal(self):
+    pol = policy.ParsePolicy(GOOD_HEADER + GLOBAL_ZONE_TERM, self.naming)
+    self.assertRaises(junipersrx.UnsupportedFilterError,
+                      junipersrx.JuniperSRX, pol, EXP_INFO)
 
   def testIcmpV6(self):
     pol = policy.ParsePolicy(GOOD_HEADER + IPV6_ICMP_TERM, self.naming)
@@ -1319,6 +1409,51 @@ class JuniperSRXTest(unittest.TestCase):
     self.assertIn(
         'address GOOD_TERM_19_SRC_EXCLUDE_3 10.0.8.0/21;', output, output)
     self.assertNotIn('10.0.0.0/24', output)
+
+  def testPlatformExclude(self):
+    large = [nacaddr.IP('10.0.0.0/20', 'LARGE', 'LARGE')]
+    small = [nacaddr.IP('10.0.0.0/24', 'SMALL', 'SMALL')]
+    self.naming.GetNetAddr.side_effect = [large, small]
+
+    pol = policy.ParsePolicy(GOOD_HEADER + PLATFORM_EXCLUDE_TERM + GOOD_TERM_19,
+                             self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertIn('good_term_19', output,
+                  output)
+    self.assertNotIn('platform-exclude-term', output)
+
+  def testPlatformTerm(self):
+    large = [nacaddr.IP('10.0.0.0/20', 'LARGE', 'LARGE')]
+    small = [nacaddr.IP('10.0.0.0/24', 'SMALL', 'SMALL')]
+    self.naming.GetNetAddr.side_effect = [large, small]
+
+    pol = policy.ParsePolicy(GOOD_HEADER + PLATFORM_TERM + GOOD_TERM_19,
+                             self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertIn('good_term_19', output,
+                  output)
+    self.assertIn('platform-term', output, output)
+
+  def testPlatformExcludeWithSourceExclude(self):
+    foo = [nacaddr.IP('192.1.0.0/20', 'FOO', 'FOO')]
+    large = [nacaddr.IP('10.0.0.0/20', 'LARGE', 'LARGE')]
+    small = [nacaddr.IP('10.0.0.0/24', 'SMALL', 'SMALL')]
+    self.naming.GetNetAddr.side_effect = [foo, large, small]
+
+    pol = policy.ParsePolicy(
+        GOOD_HEADER + PLATFORM_EXCLUDE_ADDRESS_TERM + GOOD_TERM_19, self.naming)
+    output = str(junipersrx.JuniperSRX(pol, EXP_INFO))
+    self.assertIn('address GOOD_TERM_19_SRC_EXCLUDE_0 10.0.1.0/24;', output,
+                  output)
+    self.assertIn('address GOOD_TERM_19_SRC_EXCLUDE_1 10.0.2.0/23;', output,
+                  output)
+    self.assertIn('address GOOD_TERM_19_SRC_EXCLUDE_2 10.0.4.0/22;', output,
+                  output)
+    self.assertIn('address GOOD_TERM_19_SRC_EXCLUDE_3 10.0.8.0/21;', output,
+                  output)
+    self.assertNotIn('10.0.0.0/24', output)
+    self.assertNotIn('192.1.0.0/20', output)
+    self.assertNotIn('platform-exclude-term', output)
 
   def testMixedVersionIcmp(self):
     pol = policy.ParsePolicy(GOOD_HEADER + ICMP_TYPE_TERM_1 + IPV6_ICMP_TERM,
@@ -1829,5 +1964,26 @@ class JuniperSRXTest(unittest.TestCase):
         # once i.e. is defined in the address book
         self.assertGreater(address_set_count, 1)
 
+  def testEmptyApplications(self):
+    self.naming.GetNetAddr.return_value = _IPSET
+
+    # GOOD_HEADER_3 doesn't matter, any valid header should do
+    pol = policy.ParsePolicy(GOOD_HEADER_3 + GOOD_TERM_23,
+                             self.naming)
+    p = junipersrx.JuniperSRX(pol, EXP_INFO)
+    output = p._GenerateApplications()
+
+    pattern = re.compile(r'delete: applications;')
+    self.assertTrue(pattern.search(str(''.join(output))), ''.join(output))
+
+  def testTooManyCounters(self):
+    policy_text = GOOD_HEADER
+    for i in range(270):
+      policy_text += COUNTER_GOOD_TERM.format(counter_num=i)
+    pol = policy.ParsePolicy(policy_text, self.naming)
+    self.assertRaises(
+        junipersrx.SRXTooManyCountersError, junipersrx.JuniperSRX, pol, EXP_INFO
+    )
+
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

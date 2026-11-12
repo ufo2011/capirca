@@ -14,17 +14,12 @@
 
 """Unittest for Srxlo rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from capirca.lib import naming
 from capirca.lib import policy
 from capirca.lib import srxlo
-import mock
 
 
 GOOD_HEADER_1 = """
@@ -65,6 +60,18 @@ term good-term-4 {
   action:: accept
 }
 """
+GOOD_TERM_5 = """
+term good-term-5 {
+  protocol-except:: icmp
+  action:: accept
+}
+"""
+GOOD_TERM_6 = """
+term good-term-6 {
+  protocol-except:: icmpv6
+  action:: accept
+}
+"""
 
 SUPPORTED_TOKENS = {
     'action',
@@ -81,6 +88,7 @@ SUPPORTED_TOKENS = {
     'dscp_set',
     'ether_type',
     'expiration',
+    'filter_term',
     'forwarding_class',
     'forwarding_class_except',
     'fragment_offset',
@@ -103,12 +111,14 @@ SUPPORTED_TOKENS = {
     'protocol',
     'protocol_except',
     'qos',
+    'restrict_address_family',
     'routing_instance',
     'source_address',
     'source_address_exclude',
     'source_port',
     'source_prefix',
     'source_prefix_except',
+    'target_resources',
     'traffic_class_count',
     'traffic_type',
     'translated',
@@ -159,6 +169,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -177,10 +188,10 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class SRXloTest(unittest.TestCase):
+class SRXloTest(absltest.TestCase):
 
   def setUp(self):
-    super(SRXloTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testIcmp(self):
@@ -232,6 +243,32 @@ class SRXloTest(unittest.TestCase):
                                                 self.naming), EXP_INFO))
     self.assertIn('inactive: term good-term-3 {', output)
 
+  def testIcmpExcept(self):
+    output = str(
+        srxlo.SRXlo(
+            policy.ParsePolicy(GOOD_HEADER_2 + GOOD_TERM_5, self.naming),
+            EXP_INFO))
+    self.assertIn('protocol-except icmp;', output,
+                  'missing or incorrect ICMP specification in protocol-except')
+    self.assertNotIn(
+        'icmp6;', output,
+        'missing or incorrect ICMP specification in protocol-except')
+    self.assertNotIn(
+        'icmpv6;', output,
+        'missing or incorrect ICMP specification in protocol-except')
+
+  def testIcmpv6Except(self):
+    output = str(
+        srxlo.SRXlo(
+            policy.ParsePolicy(GOOD_HEADER_1 + GOOD_TERM_6, self.naming),
+            EXP_INFO))
+    self.assertIn(
+        'next-header-except icmp6;', output,
+        'missing or incorrect ICMPv6 specification in protocol-except')
+    self.assertNotIn(
+        'icmp;', output,
+        'missing or incorrect ICMPv6 specification in protocol-except')
+
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

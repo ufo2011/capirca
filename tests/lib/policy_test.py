@@ -14,18 +14,13 @@
 
 """Unit tests for policy.py library."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from absl import logging
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
 
 
 HEADER = """
@@ -96,15 +91,40 @@ header {
 """
 
 INCLUDE_STATEMENT = """
-#include "/tmp/y.inc"
+#include "includes/y.inc"
 """
 INCLUDED_Y_FILE = """
 term included-term-1 {
   protocol:: tcp
   action:: accept
 }
+#include "includes/z.inc"
+"""
+
+BAD_INCLUDED_FILE = """
+term included-term-1 {
+  protocol:: tcp
+  action:: accept
+}
 #include "/tmp/z.inc"
 """
+
+BAD_INCLUDED_FILE_1 = """
+term included-term-1 {
+  protocol:: tcp
+  action:: accept
+}
+#include "includes/../../etc/passwd.inc"
+"""
+
+GOOD_INCLUDED_FILE_1 = """
+term good-included-term-1 {
+  protocol:: tcp
+  action:: accept
+}
+#include "includes/../pol/z.inc"
+"""
+
 GOOD_TERM_0 = """
 term good-term-0 {
   protocol:: icmp
@@ -430,6 +450,40 @@ term good-term-46 {
   encapsulate:: stuff_and_things
 }
 """
+GOOD_TERM_47 = """
+term good-term-47 {
+  protocol:: icmp tcp udp gre esp ah sctp
+  port-mirror:: true
+}
+"""
+GOOD_TERM_48 = """
+term good-term-48 {
+  protocol:: icmp
+  source-zone:: zone1 zone2
+  destination-zone:: zone1 zone2
+  action:: accept
+}
+"""
+GOOD_TERM_49 = """
+term good-term-46 {
+  protocol:: udp
+  decapsulate:: mpls-in-udp
+}
+"""
+GOOD_TERM_50 = """
+term good-term-45 {
+  source-address:: ANY
+  action:: accept
+  source-service-accounts:: acct1@blah.com
+}
+"""
+GOOD_TERM_51 = """
+term good-term-51 {
+  source-address:: ANY
+  action:: accept
+  traffic-class:: 4
+}
+"""
 GOOD_TERM_V6_1 = """
 term good-term-v6-1 {
   hop-limit:: 5
@@ -575,14 +629,19 @@ term bad-term-16 {
   action:: accept
 }
 """
-
+BAD_TERM_17 = """
+term bad-term-17 {
+  traffic-class:: 20
+  action:: accept
+}
+"""
 # pylint: disable=maybe-no-member
 
 
-class PolicyTest(unittest.TestCase):
+class PolicyTest(absltest.TestCase):
 
   def setUp(self):
-    super(PolicyTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   @mock.patch.object(policy, '_ReadFile')
@@ -603,9 +662,46 @@ class PolicyTest(unittest.TestCase):
     # ensure good-term-1 shows up as the second term
     self.assertEqual(terms[2].name, 'good-term-1')
 
-    mock_file.assert_has_calls([
-        mock.call('/tmp/y.inc'),
-        mock.call('/tmp/z.inc')])
+    mock_file.assert_has_calls(
+        [mock.call('includes/y.inc'), mock.call('includes/z.inc')]
+    )
+
+  @mock.patch.object(policy, '_ReadFile')
+  def testBadIncludes(self, mock_file):
+    """Ensure nested includes error handling works."""
+    mock_file.side_effect = [BAD_INCLUDED_FILE, GOOD_TERM_5]
+
+    # contents of our base policy (which has a bad included file)
+    pol = HEADER + INCLUDE_STATEMENT + GOOD_TERM_1
+    self.assertRaises(
+        policy.InvalidIncludeDirectoryError,
+        policy.ParsePolicy,
+        pol,
+        self.naming,
+    )
+    # Ensuring relative paths don't bypass invalid directory checks
+    mock_file.side_effect = [BAD_INCLUDED_FILE_1, GOOD_TERM_5]
+    pol = HEADER + BAD_INCLUDED_FILE_1 + GOOD_TERM_1
+    self.assertRaises(
+        policy.InvalidIncludeDirectoryError,
+        policy.ParsePolicy,
+        pol,
+        self.naming,
+    )
+
+  @mock.patch.object(policy, '_ReadFile')
+  def testGoodIncludesWithRelativePaths(self, mock_file):
+    """Ensure nested includes error handling works for valid files."""
+    mock_file.side_effect = [GOOD_TERM_5]
+    # base policy has a good included file, with relative paths
+    pol = HEADER + GOOD_INCLUDED_FILE_1 + GOOD_TERM_1
+    p = policy.ParsePolicy(pol, self.naming)
+    _, terms = p.filters[0]
+    # ensure include worked and we now have 3 terms in this policy
+    self.assertEqual(len(terms), 3)
+    self.assertEqual(terms[0].name, 'good-included-term-1')
+    self.assertEqual(terms[1].name, 'good-term-5')
+    self.assertEqual(terms[2].name, 'good-term-1')
 
   def testGoodPol(self):
     pol = HEADER + GOOD_TERM_1 + GOOD_TERM_2
@@ -677,13 +773,15 @@ class PolicyTest(unittest.TestCase):
   def testBadPortProtocols(self):
     pol = HEADER + BAD_TERM_3
     self.naming.GetServiceByProto('SNMP', 'tcp').AndReturn([])
-    self.assertRaises(policy.TermPortProtocolError, policy.ParsePolicy, pol,
-                      self.naming)
+    self.assertRaises(
+        policy.TermPortProtocolError, policy.ParsePolicy, pol, self.naming
+    )
 
   def testBadPortProtocols2(self):
     pol = HEADER + BAD_TERM_4
-    self.assertRaises(policy.TermPortProtocolError, policy.ParsePolicy, pol,
-                      self.naming)
+    self.assertRaises(
+        policy.TermPortProtocolError, policy.ParsePolicy, pol, self.naming
+    )
 
   def testMinimumTerm(self):
     pol = HEADER + GOOD_TERM_5
@@ -703,9 +801,10 @@ class PolicyTest(unittest.TestCase):
     _, terms = ret.filters[0]
     self.assertSequenceEqual(terms[0].destination_port, [(1024, 65535)])
 
-    self.naming.GetServiceByProto.assert_has_calls([
-        mock.call('MYSQL', 'tcp'),
-        mock.call('HIGH_PORTS', 'tcp')], any_order=True)
+    self.naming.GetServiceByProto.assert_has_calls(
+        [mock.call('MYSQL', 'tcp'), mock.call('HIGH_PORTS', 'tcp')],
+        any_order=True,
+    )
 
   def testPortCollapsing2(self):
     pol = HEADER + GOOD_TERM_8
@@ -716,9 +815,9 @@ class PolicyTest(unittest.TestCase):
     _, terms = ret.filters[0]
     self.assertSequenceEqual(terms[0].destination_port, [(53, 53)])
 
-    self.naming.GetServiceByProto.assert_has_calls([
-        mock.call('DNS', 'tcp'),
-        mock.call('DNS', 'udp')], any_order=True)
+    self.naming.GetServiceByProto.assert_has_calls(
+        [mock.call('DNS', 'tcp'), mock.call('DNS', 'udp')], any_order=True
+    )
 
   def testMinimumTerm2(self):
     pol = HEADER + GOOD_TERM_9
@@ -737,20 +836,42 @@ class PolicyTest(unittest.TestCase):
 
   def testTermEquality(self):
     self.naming.GetNetAddr.side_effect = [
-        [nacaddr.IPv4('64.233.160.0/19'), nacaddr.IPv4('66.102.0.0/20'),
-         nacaddr.IPv4('66.249.80.0/20'), nacaddr.IPv4('72.14.192.0/18'),
-         nacaddr.IPv4('72.14.224.0/20'), nacaddr.IPv4('216.239.32.0/19')],
+        [
+            nacaddr.IPv4('64.233.160.0/19'),
+            nacaddr.IPv4('66.102.0.0/20'),
+            nacaddr.IPv4('66.249.80.0/20'),
+            nacaddr.IPv4('72.14.192.0/18'),
+            nacaddr.IPv4('72.14.224.0/20'),
+            nacaddr.IPv4('216.239.32.0/19'),
+        ],
         [nacaddr.IPv4('10.0.0.0/8')],
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('64.233.160.0/19'), nacaddr.IPv4('66.102.0.0/20'),
-         nacaddr.IPv4('66.249.80.0/20'), nacaddr.IPv4('72.14.192.0/18'),
-         nacaddr.IPv4('72.14.224.0/20'), nacaddr.IPv4('216.239.32.0/19')],
+        [
+            nacaddr.IPv4('64.233.160.0/19'),
+            nacaddr.IPv4('66.102.0.0/20'),
+            nacaddr.IPv4('66.249.80.0/20'),
+            nacaddr.IPv4('72.14.192.0/18'),
+            nacaddr.IPv4('72.14.224.0/20'),
+            nacaddr.IPv4('216.239.32.0/19'),
+        ],
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('64.233.160.0/19'), nacaddr.IPv4('66.102.0.0/20'),
-         nacaddr.IPv4('66.249.80.0/20'), nacaddr.IPv4('72.14.192.0/18'),
-         nacaddr.IPv4('72.14.224.0/20'), nacaddr.IPv4('216.239.32.0/19')]]
+        [
+            nacaddr.IPv4('64.233.160.0/19'),
+            nacaddr.IPv4('66.102.0.0/20'),
+            nacaddr.IPv4('66.249.80.0/20'),
+            nacaddr.IPv4('72.14.192.0/18'),
+            nacaddr.IPv4('72.14.224.0/20'),
+            nacaddr.IPv4('216.239.32.0/19'),
+        ],
+    ]
     self.naming.GetServiceByProto.side_effect = [
-        ['80'], ['3306'], ['3306'], ['80'], ['3306'], ['443']]
+        ['80'],
+        ['3306'],
+        ['3306'],
+        ['80'],
+        ['3306'],
+        ['443'],
+    ]
 
     pol_text = HEADER + GOOD_TERM_19 + GOOD_TERM_20 + GOOD_TERM_21
     ret = policy.ParsePolicy(pol_text, self.naming, shade_check=False)
@@ -760,84 +881,101 @@ class PolicyTest(unittest.TestCase):
     self.assertEqual(terms[0], terms[1])
     self.assertNotEqual(terms[0], terms[2])
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_EXTERNAL_SUPER'),
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EXTERNAL_SUPER'),
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EXTERNAL_SUPER')], any_order=True)
-    self.naming.GetServiceByProto.assert_has_calls([
-        mock.call('HTTP', 'tcp'),
-        mock.call('MYSQL', 'tcp'),
-        mock.call('MYSQL', 'tcp'),
-        mock.call('HTTP', 'tcp'),
-        mock.call('MYSQL', 'tcp'),
-        mock.call('HTTPS', 'tcp')], any_order=True)
+    self.naming.GetNetAddr.assert_has_calls(
+        [
+            mock.call('PROD_EXTERNAL_SUPER'),
+            mock.call('PROD_NETWRK'),
+            mock.call('PROD_NETWRK'),
+            mock.call('PROD_EXTERNAL_SUPER'),
+            mock.call('PROD_NETWRK'),
+            mock.call('PROD_EXTERNAL_SUPER'),
+        ],
+        any_order=True,
+    )
+    self.naming.GetServiceByProto.assert_has_calls(
+        [
+            mock.call('HTTP', 'tcp'),
+            mock.call('MYSQL', 'tcp'),
+            mock.call('MYSQL', 'tcp'),
+            mock.call('HTTP', 'tcp'),
+            mock.call('MYSQL', 'tcp'),
+            mock.call('HTTPS', 'tcp'),
+        ],
+        any_order=True,
+    )
 
   def testGoodDestAddrExcludes(self):
     pol = HEADER + GOOD_TERM_7
     self.naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.62.0.0/15')]]
+        [nacaddr.IPv4('10.62.0.0/15')],
+    ]
 
     ret = policy.ParsePolicy(pol, self.naming)
     _, terms = ret.filters[0]
-    self.assertEqual(terms[0].destination_address_exclude[0],
-                     nacaddr.IPv4('10.62.0.0/15'))
+    self.assertEqual(
+        terms[0].destination_address_exclude[0], nacaddr.IPv4('10.62.0.0/15')
+    )
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EH')], any_order=True)
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('PROD_EH')], any_order=True
+    )
 
   def testGoodSrcAddrExcludes(self):
     pol = HEADER + GOOD_TERM_26
     self.naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.62.0.0/15')]]
+        [nacaddr.IPv4('10.62.0.0/15')],
+    ]
 
     ret = policy.ParsePolicy(pol, self.naming)
     _, terms = ret.filters[0]
-    self.assertEqual(terms[0].source_address_exclude[0],
-                     nacaddr.IPv4('10.62.0.0/15'))
+    self.assertEqual(
+        terms[0].source_address_exclude[0], nacaddr.IPv4('10.62.0.0/15')
+    )
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EH')], any_order=True)
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('PROD_EH')], any_order=True
+    )
 
   def testGoodAddrExcludes(self):
     pol = HEADER + GOOD_TERM_27
     self.naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.62.0.0/15')]]
+        [nacaddr.IPv4('10.62.0.0/15')],
+    ]
 
     ret = policy.ParsePolicy(pol, self.naming)
     _, terms = ret.filters[0]
-    self.assertEqual(terms[0].address_exclude[0],
-                     nacaddr.IPv4('10.62.0.0/15'))
+    self.assertEqual(terms[0].address_exclude[0], nacaddr.IPv4('10.62.0.0/15'))
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EH')], any_order=True)
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('PROD_EH')], any_order=True
+    )
 
   def testGoodAddrExcludesFlatten(self):
-    expected = sorted([nacaddr.IPv4(u'10.0.0.0/11'),
-                       nacaddr.IPv4(u'10.32.0.0/12'),
-                       nacaddr.IPv4(u'10.48.0.0/13'),
-                       nacaddr.IPv4(u'10.56.0.0/14'),
-                       nacaddr.IPv4(u'10.60.0.0/15'),
-                       nacaddr.IPv4(u'10.64.0.0/10'),
-                       nacaddr.IPv4(u'10.130.0.0/15'),
-                       nacaddr.IPv4(u'10.132.0.0/14'),
-                       nacaddr.IPv4(u'10.136.0.0/13'),
-                       nacaddr.IPv4(u'10.144.0.0/12'),
-                       nacaddr.IPv4(u'10.160.0.0/11'),
-                       nacaddr.IPv4(u'10.192.0.0/10')])
+    expected = sorted([
+        nacaddr.IPv4('10.0.0.0/11'),
+        nacaddr.IPv4('10.32.0.0/12'),
+        nacaddr.IPv4('10.48.0.0/13'),
+        nacaddr.IPv4('10.56.0.0/14'),
+        nacaddr.IPv4('10.60.0.0/15'),
+        nacaddr.IPv4('10.64.0.0/10'),
+        nacaddr.IPv4('10.130.0.0/15'),
+        nacaddr.IPv4('10.132.0.0/14'),
+        nacaddr.IPv4('10.136.0.0/13'),
+        nacaddr.IPv4('10.144.0.0/12'),
+        nacaddr.IPv4('10.160.0.0/11'),
+        nacaddr.IPv4('10.192.0.0/10'),
+    ])
     pol = HEADER + GOOD_TERM_27
     self.naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.62.0.0/15'), nacaddr.IPv4('10.129.0.0/15',
-                                                    strict=False)]]
+        [
+            nacaddr.IPv4('10.62.0.0/15'),
+            nacaddr.IPv4('10.129.0.0/15', strict=False),
+        ],
+    ]
 
     ret = policy.ParsePolicy(pol, self.naming)
     _, terms = ret.filters[0]
@@ -845,46 +983,53 @@ class PolicyTest(unittest.TestCase):
 
     self.assertEqual(sorted(terms[0].address), expected)
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EH')], any_order=True)
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('PROD_EH')], any_order=True
+    )
 
   def testGoodAddrExcludesFlattenMultiple(self):
     pol = HEADER + GOOD_TERM_27
     self.naming.GetNetAddr.side_effect = [
-        [nacaddr.IPv4('10.1.0.0/16'),
-         nacaddr.IPv4('10.2.0.0/16'),
-         nacaddr.IPv4('10.3.0.0/16'),
-         nacaddr.IPv4('192.168.0.0/16')],
-        [nacaddr.IPv4('10.2.0.0/15')]]
+        [
+            nacaddr.IPv4('10.1.0.0/16'),
+            nacaddr.IPv4('10.2.0.0/16'),
+            nacaddr.IPv4('10.3.0.0/16'),
+            nacaddr.IPv4('192.168.0.0/16'),
+        ],
+        [nacaddr.IPv4('10.2.0.0/15')],
+    ]
 
     ret = policy.ParsePolicy(pol, self.naming)
     _, terms = ret.filters[0]
     terms[0].FlattenAll()
-    self.assertEqual(terms[0].address,
-                     [nacaddr.IPv4('10.1.0.0/16'),
-                      nacaddr.IPv4('192.168.0.0/16')])
+    self.assertEqual(
+        terms[0].address,
+        [nacaddr.IPv4('10.1.0.0/16'), nacaddr.IPv4('192.168.0.0/16')],
+    )
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EH')], any_order=True)
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('PROD_EH')], any_order=True
+    )
 
   def testGoodAddrExcludesFlattenAll(self):
     pol = HEADER + GOOD_TERM_27
     self.naming.GetNetAddr.side_effect = [
-        [nacaddr.IPv4('10.1.0.0/16'),
-         nacaddr.IPv4('10.2.0.0/16'),
-         nacaddr.IPv4('10.3.0.0/16')],
-        [nacaddr.IPv4('10.0.0.0/8')]]
+        [
+            nacaddr.IPv4('10.1.0.0/16'),
+            nacaddr.IPv4('10.2.0.0/16'),
+            nacaddr.IPv4('10.3.0.0/16'),
+        ],
+        [nacaddr.IPv4('10.0.0.0/8')],
+    ]
 
     ret = policy.ParsePolicy(pol, self.naming)
     _, terms = ret.filters[0]
     terms[0].FlattenAll()
     self.assertEqual(terms[0].address, [])
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_EH')], any_order=True)
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('PROD_EH')], any_order=True
+    )
 
   def testLogging(self):
     pol = HEADER + GOOD_TERM_10
@@ -895,13 +1040,15 @@ class PolicyTest(unittest.TestCase):
 
   def testBadLogging(self):
     pol = HEADER + BAD_TERM_6
-    self.assertRaises(policy.InvalidTermLoggingError, policy.ParsePolicy, pol,
-                      self.naming)
+    self.assertRaises(
+        policy.InvalidTermLoggingError, policy.ParsePolicy, pol, self.naming
+    )
 
   def testBadAction(self):
     pol = HEADER + BAD_TERM_7
-    self.assertRaises(policy.InvalidTermActionError, policy.ParsePolicy, pol,
-                      self.naming)
+    self.assertRaises(
+        policy.InvalidTermActionError, policy.ParsePolicy, pol, self.naming
+    )
 
   def testMultifilter(self):
     pol = HEADER + GOOD_TERM_1 + HEADER_2 + GOOD_TERM_1
@@ -910,8 +1057,7 @@ class PolicyTest(unittest.TestCase):
 
   def testBadMultifilter(self):
     pol = HEADER + HEADER_2 + GOOD_TERM_1
-    self.assertRaises(policy.NoTermsError, policy.ParsePolicy, pol,
-                      self.naming)
+    self.assertRaises(policy.NoTermsError, policy.ParsePolicy, pol, self.naming)
 
   def testICMPTypes(self):
     pol = HEADER + GOOD_TERM_11
@@ -922,8 +1068,9 @@ class PolicyTest(unittest.TestCase):
 
   def testBadICMPTypes(self):
     pol = HEADER + BAD_TERM_12
-    self.assertRaises(policy.TermInvalidIcmpType,
-                      policy.ParsePolicy, pol, self.naming)
+    self.assertRaises(
+        policy.TermInvalidIcmpType, policy.ParsePolicy, pol, self.naming
+    )
 
   def testICMPTypesSorting(self):
     pol = HEADER + TERM_UNSORTED_ICMP_TYPE
@@ -945,6 +1092,14 @@ class PolicyTest(unittest.TestCase):
     self.assertEqual(terms[0].qos, 'af4')
     self.assertEqual(terms[0].name, 'qos-good-term-12')
 
+  def testTrafficClass(self):
+    pol = HEADER + GOOD_TERM_51
+    ret = policy.ParsePolicy(pol, self.naming)
+    self.assertEqual(len(ret.filters), 1)
+    _, terms = ret.filters[0]
+    self.assertEqual(terms[0].traffic_class, 4)
+    self.assertEqual(terms[0].name, 'good-term-51')
+
   def testMultiPortLines(self):
     pol = HEADER + GOOD_TERM_13
     self.naming.GetServiceByProto.side_effect = [['22', '160-162'], ['161']]
@@ -954,15 +1109,20 @@ class PolicyTest(unittest.TestCase):
     _, terms = ret.filters[0]
     self.assertSequenceEqual(terms[0].source_port, [(22, 22), (160, 162)])
 
-    self.naming.GetServiceByProto.assert_has_calls([
-        mock.call('GOOGLE_PUBLIC', 'udp'),
-        mock.call('SNMP', 'udp')], any_order=True)
+    self.naming.GetServiceByProto.assert_has_calls(
+        [mock.call('GOOGLE_PUBLIC', 'udp'), mock.call('SNMP', 'udp')],
+        any_order=True,
+    )
 
   def testErrorLineNumber(self):
     pol = HEADER + GOOD_TERM_13 + BAD_TERM_8
-    self.assertRaisesRegex(policy.ParseError,
-                           r'ERROR on "akshun" \(type STRING, line 1',
-                           policy.ParsePolicy, pol, self.naming)
+    self.assertRaisesRegex(
+        policy.ParseError,
+        r'ERROR on "akshun" \(type STRING, line 1',
+        policy.ParsePolicy,
+        pol,
+        self.naming,
+    )
 
   def testPrefixList(self):
     spol = HEADER + GOOD_TERM_14
@@ -978,8 +1138,9 @@ class PolicyTest(unittest.TestCase):
     ret = policy.ParsePolicy(dpol, self.naming)
     self.assertEqual(len(ret.filters), 1)
     _, terms = ret.filters[0]
-    self.assertEqual(terms[0].destination_prefix,
-                     ['bar_prefix_list', 'baz_prefix_list'])
+    self.assertEqual(
+        terms[0].destination_prefix, ['bar_prefix_list', 'baz_prefix_list']
+    )
 
   def testPrefixListExcept(self):
     spol = HEADER + GOOD_TERM_38
@@ -995,8 +1156,10 @@ class PolicyTest(unittest.TestCase):
     ret = policy.ParsePolicy(dpol, self.naming)
     self.assertEqual(len(ret.filters), 1)
     _, terms = ret.filters[0]
-    self.assertEqual(terms[0].destination_prefix_except,
-                     ['bar_prefix_list', 'baz_prefix_list'])
+    self.assertEqual(
+        terms[0].destination_prefix_except,
+        ['bar_prefix_list', 'baz_prefix_list'],
+    )
 
   def testPrefixListMixed(self):
     spol = HEADER + GOOD_TERM_40
@@ -1007,16 +1170,16 @@ class PolicyTest(unittest.TestCase):
     self.assertEqual(len(ret.filters), 1)
     _, terms = ret.filters[0]
     self.assertEqual(terms[0].source_prefix, ['foo_prefix_list'])
-    self.assertEqual(terms[0].source_prefix_except,
-                     ['foo_prefix_list_except'])
+    self.assertEqual(terms[0].source_prefix_except, ['foo_prefix_list_except'])
 
     # check on the destination prefix with mixed values
     ret = policy.ParsePolicy(dpol, self.naming)
     self.assertEqual(len(ret.filters), 1)
     _, terms = ret.filters[0]
     self.assertEqual(terms[0].destination_prefix, ['bar_prefix_list'])
-    self.assertEqual(terms[0].destination_prefix_except,
-                     ['bar_prefix_list_except'])
+    self.assertEqual(
+        terms[0].destination_prefix_except, ['bar_prefix_list_except']
+    )
 
   def testEtherTypes(self):
     pol = HEADER + GOOD_TERM_16
@@ -1038,8 +1201,9 @@ class PolicyTest(unittest.TestCase):
 
   def testBadProtocolEtherTypes(self):
     pol = HEADER + BAD_TERM_9
-    self.assertRaises(policy.TermProtocolEtherTypeError, policy.ParsePolicy,
-                      pol, self.naming)
+    self.assertRaises(
+        policy.TermProtocolEtherTypeError, policy.ParsePolicy, pol, self.naming
+    )
 
   def testVerbatimTerm(self):
     pol = policy.ParsePolicy(HEADER + GOOD_TERM_18, self.naming)
@@ -1099,16 +1263,23 @@ class PolicyTest(unittest.TestCase):
   def testShadingDetection(self):
     pol2 = HEADER + GOOD_TERM_2 + GOOD_TERM_3
     self.naming.GetNetAddr.side_effect = [
-        [nacaddr.IPv4('10.0.0.0/8')], [nacaddr.IPv4('10.0.0.0/8')]]
+        [nacaddr.IPv4('10.0.0.0/8')],
+        [nacaddr.IPv4('10.0.0.0/8')],
+    ]
     self.naming.GetServiceByProto.return_value = ['25']
 
     # same protocol, same saddr, shaded term defines a port.
-    self.assertRaises(policy.ShadingError, policy.ParsePolicy, pol2,
-                      self.naming, shade_check=True)
+    self.assertRaises(
+        policy.ShadingError,
+        policy.ParsePolicy,
+        pol2,
+        self.naming,
+        shade_check=True,
+    )
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('PROD_NETWRK')])
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('PROD_NETWRK')]
+    )
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
 
   def testVpnConfigWithoutPairPolicy(self):
@@ -1129,8 +1300,9 @@ class PolicyTest(unittest.TestCase):
 
   def testMultipleForwardingClassPolicy(self):
     pol = policy.ParsePolicy(HEADER + GOOD_TERM_36, self.naming)
-    self.assertEqual(['flashy', 'fritzy'],
-                     pol.filters[0][1][0].forwarding_class)
+    self.assertEqual(
+        ['flashy', 'fritzy'], pol.filters[0][1][0].forwarding_class
+    )
 
   def testForwardingClassEqual(self):
     pol_text = HEADER + GOOD_TERM_32 + GOOD_TERM_33
@@ -1162,34 +1334,38 @@ class PolicyTest(unittest.TestCase):
     pol = HEADER_2 + GOOD_TERM_35
     expected = nacaddr.IPv4('10.1.1.1/32')
     self.naming.GetNetAddr.side_effect = [
-        [nacaddr.IPv4('10.0.0.0/8')], [nacaddr.IPv4('10.1.1.1/32')]]
+        [nacaddr.IPv4('10.0.0.0/8')],
+        [nacaddr.IPv4('10.1.1.1/32')],
+    ]
 
     result = policy.ParsePolicy(pol, self.naming)
     self.assertEqual(result.filters[0][1][0].next_ip[0], expected)
 
-    self.naming.GetNetAddr.assert_has_calls([
-        mock.call('PROD_NETWRK'),
-        mock.call('NEXT_IP')])
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('PROD_NETWRK'), mock.call('NEXT_IP')]
+    )
 
   def testStr(self):
     """Sanity test to verify __eq__ works on Policy objects."""
     pol = policy.ParsePolicy(HEADER_4 + GOOD_TERM_30, self.naming)
-    logging.info('Ensuring string formatting doesn\'t throw errors: %s', pol)
+    logging.info("Ensuring string formatting doesn't throw errors: %s", pol)
 
   def testTermAddressByteLength(self):
     """Tests the AddressByteLength function."""
     pol = HEADER + GOOD_TERM_2
     self.naming.GetNetAddr.return_value = [
-        nacaddr.IPv4('10.0.0.1/32'), nacaddr.IPv4('10.0.0.2/32'),
+        nacaddr.IPv4('10.0.0.1/32'),
+        nacaddr.IPv4('10.0.0.2/32'),
         nacaddr.IPv6('2001:4860:4860::8844/128'),
-        nacaddr.IPv6('2001:4860:4860::8888/128')]
+        nacaddr.IPv6('2001:4860:4860::8888/128'),
+    ]
     ret = policy.ParsePolicy(pol, self.naming)
     term = ret.filters[0][1][0]
     self.assertEqual(2, term.AddressesByteLength([4]))
     self.assertEqual(8, term.AddressesByteLength([6]))
     self.assertEqual(10, term.AddressesByteLength())
 
-# pylint: enable=maybe-no-member
+  # pylint: enable=maybe-no-member
 
   def testICMPCodes(self):
     pol = HEADER + GOOD_TERM_42
@@ -1200,15 +1376,19 @@ class PolicyTest(unittest.TestCase):
   def testBadICMPCodes(self):
     pol = HEADER + BAD_TERM_13
     pol2 = HEADER + BAD_TERM_14
-    self.assertRaises(policy.ICMPCodeError, policy.ParsePolicy, pol,
-                      self.naming)
-    self.assertRaises(policy.ICMPCodeError, policy.ParsePolicy, pol2,
-                      self.naming)
+    self.assertRaises(
+        policy.ICMPCodeError, policy.ParsePolicy, pol, self.naming
+    )
+    self.assertRaises(
+        policy.ICMPCodeError, policy.ParsePolicy, pol2, self.naming
+    )
 
   def testOptimizedConsistency(self):
     pol = HEADER + GOOD_TERM_2 + GOOD_TERM_3
-    unoptimized_addr = [nacaddr.IPv4('10.16.128.6/32'),
-                        nacaddr.IPv4('10.16.128.7/32')]
+    unoptimized_addr = [
+        nacaddr.IPv4('10.16.128.6/32'),
+        nacaddr.IPv4('10.16.128.7/32'),
+    ]
     optimized_addr = nacaddr.CollapseAddrList(unoptimized_addr)
     self.naming.GetNetAddr.return_value = unoptimized_addr
     self.naming.GetServiceByProto.return_value = ['25']
@@ -1225,8 +1405,13 @@ class PolicyTest(unittest.TestCase):
 
   def testShadeCheckConsistency(self):
     pol = HEADER + TERM_SUPER_3 + TERM_SUB_2
-    self.assertRaises(policy.ShadingError, policy.ParsePolicy, pol, self.naming,
-                      shade_check=True)
+    self.assertRaises(
+        policy.ShadingError,
+        policy.ParsePolicy,
+        pol,
+        self.naming,
+        shade_check=True,
+    )
     self.assertTrue(policy._SHADE_CHECK)
     _ = policy.ParsePolicy(pol, self.naming)
     self.assertFalse(policy._SHADE_CHECK)
@@ -1236,6 +1421,25 @@ class PolicyTest(unittest.TestCase):
     result = policy.ParsePolicy(pol, self.naming)
     self.assertIn('encapsulate: stuff_and_things', str(result))
 
+  def testDecapsulate(self):
+    pol = HEADER + GOOD_TERM_49
+    result = policy.ParsePolicy(pol, self.naming)
+    self.assertIn('decapsulate: mpls-in-udp', str(result))
+
+  def testPortMirror(self):
+    pol = HEADER + GOOD_TERM_47
+    result = policy.ParsePolicy(pol, self.naming)
+    self.assertIn('port_mirror: true', str(result))
+
+  def testSrxGLobalZone(self):
+    pol = HEADER + GOOD_TERM_48
+    result = policy.ParsePolicy(pol, self.naming)
+    zones = ['zone1', 'zone2']
+    expected_source = 'source_zone: %s' % zones
+    expected_destination = 'destination_zone: %s' % zones
+    self.assertIn(expected_source, str(result))
+    self.assertIn(expected_destination, str(result))
+
   def testTTL(self):
     pol = HEADER + GOOD_TERM_43
     result = policy.ParsePolicy(pol, self.naming)
@@ -1243,8 +1447,15 @@ class PolicyTest(unittest.TestCase):
 
   def testInvalidTTL(self):
     pol = HEADER + BAD_TERM_15
-    self.assertRaises(policy.InvalidTermTTLValue, policy.ParsePolicy,
-                      pol, self.naming)
+    self.assertRaises(
+        policy.InvalidTermTTLValue, policy.ParsePolicy, pol, self.naming
+    )
+
+  def testInvalidTrafficClass(self):
+    pol = HEADER + BAD_TERM_17
+    self.assertRaises(
+        policy.InvalidTrafficClassValue, policy.ParsePolicy, pol, self.naming
+    )
 
   def testNeedAddressBook(self):
     pol1 = policy.ParsePolicy(HEADER + GOOD_TERM_1, self.naming)
@@ -1257,37 +1468,48 @@ class PolicyTest(unittest.TestCase):
     self.assertTrue(pol4._NeedsAddressBook())
 
   def testAddressCleanupCorrect(self):
-    unoptimized_addr = [nacaddr.IPv4('10.16.128.6/32', token='FOO'),
-                        nacaddr.IPv4('10.16.128.7/32', token='BAR')]
+    unoptimized_addr = [
+        nacaddr.IPv4('10.16.128.6/32', token='FOO'),
+        nacaddr.IPv4('10.16.128.7/32', token='BAR'),
+    ]
     self.naming.GetNetAddr.return_value = unoptimized_addr
     pol = policy.ParsePolicy(HEADER + GOOD_TERM_2, self.naming)
     term = pol.filters[0][1][0]
-    self.assertEqual(nacaddr.CollapseAddrList(unoptimized_addr),
-                     term.source_address)
+    self.assertEqual(
+        nacaddr.CollapseAddrList(unoptimized_addr), term.source_address
+    )
     pol = policy.ParsePolicy(HEADER_SRX + GOOD_TERM_2, self.naming)
     term = pol.filters[0][1][0]
-    self.assertEqual(nacaddr.CollapseAddrListPreserveTokens(unoptimized_addr),
-                     term.source_address)
+    self.assertEqual(
+        nacaddr.CollapseAddrListPreserveTokens(unoptimized_addr),
+        term.source_address,
+    )
 
   def testLogLimit(self):
     pol = policy.ParsePolicy(HEADER_4 + GOOD_TERM_44, self.naming)
     term = pol.filters[0][1][0]
-    self.assertEqual((u'999', u'day'), term.log_limit)
+    self.assertEqual(('999', 'day'), term.log_limit)
 
   def testGREandTCPUDPError(self):
     pol = HEADER + BAD_TERM_16
     self.naming.GetServiceByProto.return_value = ['25']
-    self.assertRaises(policy.MixedPortandNonPortProtos, policy.ParsePolicy,
-                      pol, self.naming)
+    self.assertRaises(
+        policy.MixedPortandNonPortProtos, policy.ParsePolicy, pol, self.naming
+    )
+
+  def testSourceServiceAccount(self):
+    pol = HEADER_HF_1 + GOOD_TERM_50
+
+    result = policy.ParsePolicy(pol, self.naming)
+    term = result.filters[0][1][0]
+    self.assertEqual(['acct1@blah.com'], term.source_service_accounts)
 
   def testTargetServiceAccount(self):
     pol = HEADER_HF_1 + GOOD_TERM_45
 
     result = policy.ParsePolicy(pol, self.naming)
     term = result.filters[0][1][0]
-    self.assertEqual(
-        ['acct1@blah.com'],
-        term.target_service_accounts)
+    self.assertEqual(['acct1@blah.com'], term.target_service_accounts)
 
   # Contains Tests
 
@@ -1303,15 +1525,20 @@ class PolicyTest(unittest.TestCase):
   def testIpAndPortContains(self, mock_naming):
     mock_naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.1.1.1/32')]]
-    term_one = policy.Term([policy.VarType(3, 'PROD'),
-                            policy.VarType(7, (22, 22)),
-                            policy.VarType(7, (80, 80)),
-                            policy.VarType(10, 'tcp')])
+        [nacaddr.IPv4('10.1.1.1/32')],
+    ]
+    term_one = policy.Term([
+        policy.VarType(3, 'PROD'),
+        policy.VarType(7, (22, 22)),
+        policy.VarType(7, (80, 80)),
+        policy.VarType(10, 'tcp'),
+    ])
     term_one.AddObject(policy.VarType(2, 'accept'))
-    term_two = policy.Term([policy.VarType(3, 'SMALLER_PROD'),
-                            policy.VarType(7, (22, 22)),
-                            policy.VarType(10, 'tcp')])
+    term_two = policy.Term([
+        policy.VarType(3, 'SMALLER_PROD'),
+        policy.VarType(7, (22, 22)),
+        policy.VarType(10, 'tcp'),
+    ])
     term_two.AddObject(policy.VarType(2, 'accept'))
     self.assertIn(term_two, term_one)
     self.assertNotIn(term_one, term_two)
@@ -1324,11 +1551,13 @@ class PolicyTest(unittest.TestCase):
     # than the contained term
     mock_naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.1.1.1/32')]]
+        [nacaddr.IPv4('10.1.1.1/32')],
+    ]
     term_one = policy.Term([policy.VarType(5, 'PROD')])
     term_one.AddObject(policy.VarType(2, 'accept'))
-    term_two = policy.Term([policy.VarType(3, 'SMALLER_PROD'),
-                            policy.VarType(7, (22, 22))])
+    term_two = policy.Term(
+        [policy.VarType(3, 'SMALLER_PROD'), policy.VarType(7, (22, 22))]
+    )
     term_two.AddObject(policy.VarType(2, 'accept'))
     self.assertIn(term_two, term_one)
     self.assertNotIn(term_one, term_two)
@@ -1340,10 +1569,12 @@ class PolicyTest(unittest.TestCase):
     mock_naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('10.0.0.0/8')],
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.62.0.0/15')]]
+        [nacaddr.IPv4('10.62.0.0/15')],
+    ]
     term_one = policy.Term([policy.VarType(3, 'FOO')])
-    term_two = policy.Term([policy.VarType(3, 'FOO'),
-                            policy.VarType(11, 'BAR')])
+    term_two = policy.Term(
+        [policy.VarType(3, 'FOO'), policy.VarType(11, 'BAR')]
+    )
     self.assertIn(term_two, term_one)
     self.assertNotIn(term_one, term_two)
 
@@ -1355,11 +1586,14 @@ class PolicyTest(unittest.TestCase):
         [nacaddr.IPv4('10.0.0.0/8')],
         [nacaddr.IPv4('10.10.0.0/24')],
         [nacaddr.IPv4('10.0.0.0/8')],
-        [nacaddr.IPv4('10.0.0.0/9')]]
-    term_one = policy.Term([policy.VarType(3, 'FOO'),
-                            policy.VarType(11, 'BAR')])
-    term_two = policy.Term([policy.VarType(3, 'FOO'),
-                            policy.VarType(11, 'BAR')])
+        [nacaddr.IPv4('10.0.0.0/9')],
+    ]
+    term_one = policy.Term(
+        [policy.VarType(3, 'FOO'), policy.VarType(11, 'BAR')]
+    )
+    term_two = policy.Term(
+        [policy.VarType(3, 'FOO'), policy.VarType(11, 'BAR')]
+    )
     self.assertIn(term_two, term_one)
     self.assertNotIn(term_one, term_two)
 
@@ -1368,8 +1602,9 @@ class PolicyTest(unittest.TestCase):
     # contains one which has them set.
     tcp_est_term = policy.Term([policy.VarType(9, 'tcp-established')])
     term = policy.Term([])
-    tcp_udp_est_term = policy.Term([policy.VarType(9, 'tcp-established'),
-                                    policy.VarType(9, 'established')])
+    tcp_udp_est_term = policy.Term(
+        [policy.VarType(9, 'tcp-established'), policy.VarType(9, 'established')]
+    )
     self.assertNotIn(term, tcp_est_term)
     self.assertNotIn(tcp_est_term, term)
     self.assertIn(tcp_est_term, tcp_udp_est_term)
@@ -1432,7 +1667,8 @@ class PolicyTest(unittest.TestCase):
         [nacaddr.IPv4('192.168.1.1/32')],
         [nacaddr.IPv4('10.1.1.0/24')],
         [nacaddr.IPv4('10.1.1.0/24')],
-        [nacaddr.IPv4('10.1.1.0/24')]]
+        [nacaddr.IPv4('10.1.1.0/24')],
+    ]
     term = policy.Term([policy.VarType(5, 'FOO')])
     addr_term = policy.Term([policy.VarType(5, 'FOO')])
     saddr_term = policy.Term([policy.VarType(3, 'FOO')])
@@ -1445,7 +1681,8 @@ class PolicyTest(unittest.TestCase):
   def testDestAddrNotInDestAddr(self, mock_naming):
     mock_naming.GetNetAddr.side_effect = [
         [nacaddr.IPv4('192.168.1.1/32')],
-        [nacaddr.IPv4('10.1.1.0/24')]]
+        [nacaddr.IPv4('10.1.1.0/24')],
+    ]
     term_one = policy.Term([policy.VarType(4, 'FOO')])
     term_two = policy.Term([policy.VarType(4, 'FOO')])
     self.assertNotIn(term_one, term_two)
@@ -1508,8 +1745,8 @@ class PolicyTest(unittest.TestCase):
   def testForwardingClassContains(self):
     term_one = policy.Term([policy.VarType(43, 'foo')])
     term_two = policy.Term(
-        [policy.VarType(43, 'bar'),
-         policy.VarType(43, 'foo')])
+        [policy.VarType(43, 'bar'), policy.VarType(43, 'foo')]
+    )
     self.assertIn(term_one, term_one)
     self.assertIn(term_one, term_two)
 
@@ -1533,15 +1770,13 @@ class PolicyTest(unittest.TestCase):
 
   @mock.patch.object(policy, 'DEFINITIONS')
   def testNextIPContained(self, mock_naming):
-    mock_naming.GetNetAddr.side_effect = [
-        [nacaddr.IPv4('192.168.1.1/32')]]
+    mock_naming.GetNetAddr.side_effect = [[nacaddr.IPv4('192.168.1.1/32')]]
     term_one = policy.Term([policy.VarType(46, 'FOO')])
     self.assertIn(term_one, term_one)
 
   @mock.patch.object(policy, 'DEFINITIONS')
   def testNextIPNotIn(self, mock_naming):
-    mock_naming.GetNetAddr.side_effect = [
-        [nacaddr.IPv4('192.168.1.1/32')]]
+    mock_naming.GetNetAddr.side_effect = [[nacaddr.IPv4('192.168.1.1/32')]]
     term_one = policy.Term([policy.VarType(46, 'FOO')])
     term_two = policy.Term([])
     self.assertNotIn(term_two, term_one)
@@ -1582,7 +1817,8 @@ class PolicyTest(unittest.TestCase):
     target_resources = [('p1', 'v1'), ('p2', 'v2')]
     target_resource_2 = [('p3', 'v3')]
     term_one = policy.Term(
-        [policy.VarType(policy.VarType.TARGET_RESOURCES, target_resources)])
+        [policy.VarType(policy.VarType.TARGET_RESOURCES, target_resources)]
+    )
     term_one.AddObject(policy.VarType(59, target_resource_2))
 
     self.assertIn(target_resources, term_one.target_resources)
@@ -1617,8 +1853,12 @@ class PolicyTest(unittest.TestCase):
 
     _, terms = p.filters[0]
     self.assertIn('deny', terms[0].action)
-    expected_target_resources = [('proj1', 'vpc1'), ('proj2', 'vpc2'),
-                                 ('proj3', 'vpc3'), ('proj4', 'vpc4')]
+    expected_target_resources = [
+        ('proj1', 'vpc1'),
+        ('proj2', 'vpc2'),
+        ('proj3', 'vpc3'),
+        ('proj4', 'vpc4'),
+    ]
     self.assertListEqual(expected_target_resources, terms[0].target_resources)
 
   def testParsePolicyMultipleCommaSepTargetResources(self):
@@ -1633,8 +1873,12 @@ class PolicyTest(unittest.TestCase):
 
     _, terms = p.filters[0]
     self.assertIn('deny', terms[0].action)
-    expected_target_resources = [('proj1', 'vpc1'), ('proj2', 'vpc2'),
-                                 ('proj3', 'vpc3'), ('proj4', 'vpc4')]
+    expected_target_resources = [
+        ('proj1', 'vpc1'),
+        ('proj2', 'vpc2'),
+        ('proj3', 'vpc3'),
+        ('proj4', 'vpc4'),
+    ]
     self.assertListEqual(expected_target_resources, terms[0].target_resources)
 
   def testParsePolicyMultipleSpaceSepTargetResources(self):
@@ -1649,8 +1893,12 @@ class PolicyTest(unittest.TestCase):
 
     _, terms = p.filters[0]
     self.assertIn('deny', terms[0].action)
-    expected_target_resources = [('proj1', 'vpc1'), ('proj2', 'vpc2'),
-                                 ('proj3', 'vpc3'), ('proj4', 'vpc4')]
+    expected_target_resources = [
+        ('proj1', 'vpc1'),
+        ('proj2', 'vpc2'),
+        ('proj3', 'vpc3'),
+        ('proj4', 'vpc4'),
+    ]
     self.assertListEqual(expected_target_resources, terms[0].target_resources)
 
   def testParsePolicyMultipleArrayCommaTargetResources(self):
@@ -1665,8 +1913,12 @@ class PolicyTest(unittest.TestCase):
 
     _, terms = p.filters[0]
     self.assertIn('deny', terms[0].action)
-    expected_target_resources = [('proj1', 'vpc1'), ('proj2', 'vpc2'),
-                                 ('proj3', 'vpc3'), ('proj4', 'vpc4')]
+    expected_target_resources = [
+        ('proj1', 'vpc1'),
+        ('proj2', 'vpc2'),
+        ('proj3', 'vpc3'),
+        ('proj4', 'vpc4'),
+    ]
     self.assertListEqual(expected_target_resources, terms[0].target_resources)
 
   def testParsePolicyMultipleArraySpaceTargetResources(self):
@@ -1681,10 +1933,14 @@ class PolicyTest(unittest.TestCase):
 
     _, terms = p.filters[0]
     self.assertIn('deny', terms[0].action)
-    expected_target_resources = [('proj1', 'vpc1'), ('proj2', 'vpc2'),
-                                 ('proj3', 'vpc3'), ('proj4', 'vpc4')]
+    expected_target_resources = [
+        ('proj1', 'vpc1'),
+        ('proj2', 'vpc2'),
+        ('proj3', 'vpc3'),
+        ('proj4', 'vpc4'),
+    ]
     self.assertListEqual(expected_target_resources, terms[0].target_resources)
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

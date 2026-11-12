@@ -14,17 +14,13 @@
 
 """Unittest for ACL rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
-import unittest
+from absl.testing import absltest
+from absl.testing import parameterized
+from unittest import mock
 
 from capirca.lib import aclgenerator
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
 
 
 GOOD_HEADER_1 = """
@@ -92,11 +88,23 @@ class ACLMock(aclgenerator.ACLGenerator):
     pass
 
 
-class ACLGeneratorTest(unittest.TestCase):
+class ACLGeneratorTest(parameterized.TestCase):
 
   def setUp(self):
-    super(ACLGeneratorTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
+
+  # pylint: disable=line-too-long,g-inconsistent-quotes
+  @parameterized.parameters(([
+      'There is something very long about this comment that',
+      'will require it to be truncated in order for nftables',
+      'binary to be able to load the rulesets.'], '"There is something very long about this comment that will require it to be truncated in order for nftables binary to be able t"'),
+    (['some "comment" description', 'second \'comment\' item\nNewline'], '"some \'comment\' description second \'comment\' item Newline"'), ('a string comment', '"a string comment"'))
+  def testTruncateWords(self, input_data, expected_output):
+    result = aclgenerator.TruncateWords(
+        input_data, 126)
+    self.assertEqual(result, expected_output)
+    # pylint: disable=line-too-long
 
   def testEstablishedNostate(self):
     # When using "nostate" filter and a term with "option:: established"
@@ -132,6 +140,8 @@ class ACLGeneratorTest(unittest.TestCase):
         self.assertEqual(term.name, result)
         result = acl.FixTermLength(term.name, False, False)
         self.assertEqual(term.name, result)
+        result = acl.FixTermLength(term.name, False, False, 30)
+        self.assertEqual(term.name, result)
 
   def testLongTermAbbreviation(self):
     # Term name that is above specified limit should come out abbreviated
@@ -143,6 +153,12 @@ class ACLGeneratorTest(unittest.TestCase):
         result = acl.FixTermLength(term.name, True, False)
         self.assertIn('-abbreviations', result,
                       'Our strings disappeared during abbreviation.')
+        # override the term max length and ensure there are no abbreviations.
+        result = acl.FixTermLength(term.name, True, False,
+                                   4 * acl._TERM_MAX_LENGTH)
+        self.assertNotIn(
+            'GOOG', result,
+            'Strings incorrect in abbreviation and length overriding.')
 
   def testTermNameTruncation(self):
     # Term name that is above specified limit should come out truncated
@@ -153,6 +169,26 @@ class ACLGeneratorTest(unittest.TestCase):
       for term in terms:
         result = acl.FixTermLength(term.name, False, True)
         self.assertEqual('google-experiment-abbrev', result)
+        result = acl.FixTermLength(term.name, True, False,
+                                   4 * acl._TERM_MAX_LENGTH)
+        self.assertIn(
+            'google-experiment-abbreviations', result,
+            'Strings incorrectly disappeared during abbreviation '
+            'and length overriding.')
+
+  def testHexDigest(self):
+    # Term name that is above specified limit should come out truncated
+    # when truncation is enabled.
+    pol = policy.ParsePolicy(GOOD_HEADER_1 + GOOD_LONG_TERM_NAME, self.naming)
+    acl = ACLMock(pol, EXP_INFO)
+    for _, terms in pol.filters:
+      for term in terms:
+        result = acl.HexDigest(term.name)
+        self.assertEqual(
+            '070582f8b50d3cb01aa432c26a55b5f378d281c98647f59dd7f3b0d8b1c9d0d5',
+            result)
+        result = acl.HexDigest(term.name, 32)
+        self.assertEqual('070582f8b50d3cb01aa432c26a55b5f3', result)
 
   def testLongTermName(self):
     # Term name that is above specified limit and is impossible to abbreviate
@@ -199,7 +235,11 @@ class ACLGeneratorTest(unittest.TestCase):
     self.assertListEqual(
         ['%sId:%s' % ('$', '$')],
         aclgenerator.AddRepositoryTags(date=False, revision=False))
+    # Wrap the Date: tag.
+    self.assertListEqual(
+        ['"%sDate:%s"' % ('$', '$')],
+        aclgenerator.AddRepositoryTags(revision=False, rid=False, wrap=True))
 
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

@@ -14,23 +14,18 @@
 
 """Unittest for juniper acl rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import re
-import unittest
+from absl.testing import absltest
+from unittest import mock
 
 from absl import logging
+from absl.testing import parameterized
 from capirca.lib import aclgenerator
 from capirca.lib import juniper
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
-from six.moves import range
 
 GOOD_HEADER = """
 header {
@@ -48,6 +43,11 @@ header {
   target:: juniper test-filter inet6
 }
 """
+GOOD_HEADER_MIXED = """
+header {
+  target:: juniper test-filter mixed
+}
+"""
 GOOD_HEADER_BRIDGE = """
 header {
   target:: juniper test-filter bridge
@@ -56,6 +56,11 @@ header {
 GOOD_DSMO_HEADER = """
 header {
   target:: juniper test-filter enable_dsmo
+}
+"""
+GOOD_FILTER_ENHANCED_MODE_HEADER = """
+header {
+  target:: juniper test-filter filter_enhanced_mode
 }
 """
 GOOD_NOVERBOSE_V4_HEADER = """
@@ -380,10 +385,23 @@ term good-term-36 {
   action:: accept
 }
 """
+GOOD_TERM_37 = """
+term good-term-37 {
+  destination-address:: SOME_HOST
+  restrict-address-family:: inet
+  action:: accept
+}
+"""
 GOOD_TERM_COMMENT = """
 term good-term-comment {
   comment:: "This is a COMMENT"
   action:: accept
+}
+"""
+GOOD_TERM_FILTER = """
+term good-term-filter {
+  comment:: "This is a COMMENT"
+  filter-term:: my-filter
 }
 """
 BAD_TERM_1 = """
@@ -426,6 +444,20 @@ term icmptype-mismatch {
   action:: accept
 }
 """
+BAD_ICMPTYPE_TERM_3 = """
+term icmptype-mismatch {
+  comment:: "error when icmp paired with inet6 filter, but render tcp"
+  protocol:: icmp tcp
+  action:: accept
+}
+"""
+BAD_ICMPTYPE_TERM_4 = """
+term icmptype-mismatch {
+  comment:: "error when icmpv6 paired with inet filter, but render tcp"
+  protocol:: icmpv6 tcp
+  action:: accept
+}
+"""
 DEFAULT_TERM_1 = """
 term default-term-1 {
   action:: deny
@@ -458,6 +490,54 @@ term bad-term-2 {
   routing-instance:: instance-name
 }
 """
+DECAPSULATE_GOOD_TERM_1 = """
+term good-term-1 {
+  protocol:: udp
+  decapsulate:: template-name
+}
+"""
+DECAPSULATE_GOOD_TERM_2 = """
+term good-term-2 {
+  protocol:: udp
+  decapsulate:: template-name
+  counter:: count-name
+}
+"""
+DECAPSULATE_BAD_TERM_1 = """
+term bad-term-1 {
+  protocol:: udp
+  decapsulate:: template-name
+  action:: accept
+}
+"""
+DECAPSULATE_BAD_TERM_2 = """
+term bad-term-2 {
+  protocol:: udp
+  decapsulate:: template-name
+  routing-instance:: instance-name
+}
+"""
+DECAPSULATE_BAD_TERM_3 = """
+term bad-term-2 {
+  protocol:: udp
+  decapsulate:: template-name
+  encapsulate:: something
+}
+"""
+PORTMIRROR_GOOD_TERM_1 = """
+term good-term-1 {
+  protocol:: tcp
+  port-mirror:: true
+}
+"""
+PORTMIRROR_GOOD_TERM_2 = """
+term good-term-2 {
+  protocol:: tcp
+  port-mirror:: true
+  counter:: count-name
+  action:: deny
+}
+"""
 LONG_COMMENT_TERM_1 = """
 term long-comment-term-1 {
   comment:: "this is very very very very very very very very very very very
@@ -474,6 +554,12 @@ term long-policer-term-1 {
 HOPOPT_TERM = """
 term good-term-1 {
   protocol:: hopopt
+  action:: accept
+}
+"""
+HOPOPT_TERM_EXCEPT = """
+term good-term-1 {
+  protocol-except:: hopopt
   action:: accept
 }
 """
@@ -538,6 +624,22 @@ term flex-match-term-1 {
   action:: deny
 }
 """
+BAD_TERM_FILTER = """
+term bad_term_filter {
+  filter-term:: my-filter
+  action:: deny
+}
+"""
+
+MIXED_TESTING_TERM = """
+term good-term {
+  protocol:: tcp
+  source-address:: SOME_HOST
+  destination-port:: SMTP
+  destination-address:: SOME_OTHER_HOST
+  action:: accept
+}
+"""
 
 SUPPORTED_TOKENS = frozenset([
     'action',
@@ -552,9 +654,11 @@ SUPPORTED_TOKENS = frozenset([
     'dscp_except',
     'dscp_match',
     'dscp_set',
+    'decapsulate',
     'encapsulate',
     'ether_type',
     'expiration',
+    'filter_term',
     'flexible_match_range',
     'forwarding_class',
     'forwarding_class_except',
@@ -574,16 +678,19 @@ SUPPORTED_TOKENS = frozenset([
     'platform_exclude',
     'policer',
     'port',
+    'port_mirror',
     'precedence',
     'protocol',
     'protocol_except',
     'qos',
+    'restrict_address_family',
     'routing_instance',
     'source_address',
     'source_address_exclude',
     'source_port',
     'source_prefix',
     'source_prefix_except',
+    'target_resources',
     'traffic_class_count',
     'traffic_type',
     'translated',
@@ -633,6 +740,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -651,10 +759,10 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class JuniperTest(unittest.TestCase):
+class JuniperTest(parameterized.TestCase):
 
   def setUp(self):
-    super(JuniperTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testOptions(self):
@@ -757,6 +865,47 @@ class JuniperTest(unittest.TestCase):
         EXP_INFO)
     self.assertRaises(juniper.JuniperMultipleTerminatingActionError, str, jcl)
 
+  def testDecapsulate(self):
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + DECAPSULATE_GOOD_TERM_1, self.naming),
+        EXP_INFO)
+    output = str(jcl)
+    self.assertIn('decapsulate template-name;', output, output)
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + DECAPSULATE_GOOD_TERM_2, self.naming),
+        EXP_INFO)
+    output = str(jcl)
+    self.assertIn('decapsulate template-name;', output, output)
+    self.assertIn('count count-name;', output, output)
+
+  def testFailDecapsulate(self):
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + DECAPSULATE_BAD_TERM_1, self.naming),
+        EXP_INFO)
+    self.assertRaises(juniper.JuniperMultipleTerminatingActionError, str, jcl)
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + DECAPSULATE_BAD_TERM_2, self.naming),
+        EXP_INFO)
+    self.assertRaises(juniper.JuniperMultipleTerminatingActionError, str, jcl)
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + DECAPSULATE_BAD_TERM_3, self.naming),
+        EXP_INFO)
+    self.assertRaises(juniper.JuniperMultipleTerminatingActionError, str, jcl)
+
+  def testPortMirror(self):
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + PORTMIRROR_GOOD_TERM_1, self.naming),
+        EXP_INFO)
+    output = str(jcl)
+    self.assertIn('port-mirror;', output, output)
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + PORTMIRROR_GOOD_TERM_2, self.naming),
+        EXP_INFO)
+    output = str(jcl)
+    self.assertIn('port-mirror;', output, output)
+    self.assertIn('count count-name;', output, output)
+    self.assertIn('discard;', output, output)
+
   def testIcmpType(self):
     jcl = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_3,
                                              self.naming), EXP_INFO)
@@ -790,7 +939,7 @@ class JuniperTest(unittest.TestCase):
     jcl = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER_V6 + GOOD_TERM_1_V6,
                                              self.naming), EXP_INFO)
     output = str(jcl)
-    self.assertTrue('next-header icmpv6;' in output and
+    self.assertTrue('next-header icmp6;' in output and
                     'next-header tcp;' in output, output)
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
@@ -821,6 +970,19 @@ class JuniperTest(unittest.TestCase):
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
     self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
 
+  def testFilterEnhancedModeHeader(self):
+    self.naming.GetNetAddr.return_value = [nacaddr.IP('10.0.0.0/8')]
+    self.naming.GetServiceByProto.return_value = ['25']
+
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_FILTER_ENHANCED_MODE_HEADER + GOOD_TERM_1,
+                           self.naming), EXP_INFO)
+    output = str(jcl)
+    self.assertIn('enhanced-mode;', output, output)
+
+    self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
+    self.naming.GetServiceByProto.assert_called_once_with('SMTP', 'tcp')
+
   def testHopLimit(self):
     jcl = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER_V6 +
                                              GOOD_TERM_V6_HOP_LIMIT,
@@ -845,7 +1007,7 @@ class JuniperTest(unittest.TestCase):
     jcl = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER_V6 + GOOD_TERM_20_V6,
                                              self.naming), EXP_INFO)
     output = str(jcl)
-    self.assertIn('next-header-except icmpv6;', output, output)
+    self.assertIn('next-header-except icmp6;', output, output)
 
   def testProtocolCase(self):
     jcl = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_5,
@@ -1023,6 +1185,31 @@ class JuniperTest(unittest.TestCase):
     self.naming.GetServiceByProto.assert_has_calls([
         mock.call('DNS', 'tcp'), mock.call('DNS', 'udp')])
 
+  def testMixedFilterInetType(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IPv4('127.0.0.1'), nacaddr.IPv6('::1/128')]
+
+    jcl = juniper.Juniper(policy.ParsePolicy(
+        GOOD_HEADER_MIXED + GOOD_TERM_12, self.naming), EXP_INFO)
+    output = str(jcl)
+    self.assertIn('test-filter4', output, output)
+    self.assertIn('127.0.0.1', output, output)
+    self.assertIn('test-filter6', output, output)
+    self.assertIn('::1/128', output, output)
+
+    self.naming.GetNetAddr.assert_called_once_with('LOCALHOST')
+
+  def testRestrictAddressFamilyType(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IPv4('127.0.0.1'), nacaddr.IPv6('::1/128')]
+
+    jcl = juniper.Juniper(policy.ParsePolicy(
+        GOOD_HEADER_MIXED + GOOD_TERM_37, self.naming), EXP_INFO)
+    output = str(jcl)
+    self.assertIn('127.0.0.1', output, output)
+    self.assertNotIn('::1/128', output, output)
+    self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
+
   def testBridgeFilterInetType(self):
     self.naming.GetNetAddr.return_value = [
         nacaddr.IPv4('127.0.0.1'), nacaddr.IPv6('::1/128')]
@@ -1151,6 +1338,16 @@ class JuniperTest(unittest.TestCase):
 
     self.naming.GetServiceByProto.assert_called_once_with('SSH', 'tcp')
 
+  def testFilterTerm(self):
+    jcl = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_FILTER,
+                                             self.naming), EXP_INFO)
+    output = str(jcl)
+    self.assertIn('filter my-filter;', output, output)
+
+  def testFilterActionTerm(self):
+    with self.assertRaises(policy.InvalidTermActionError):
+      policy.ParsePolicy(GOOD_HEADER + BAD_TERM_FILTER, self.naming)
+
   def testArbitraryOptions(self):
     self.naming.GetServiceByProto.return_value = ['22']
 
@@ -1170,7 +1367,7 @@ class JuniperTest(unittest.TestCase):
 
     mock_debug.assert_called_once_with(
         'Term icmptype-mismatch will not be rendered,'
-        ' as it has icmpv6 match specified but '
+        ' as it has  match specified but '
         'the ACL is of inet address family.')
 
   @mock.patch.object(juniper.logging, 'debug')
@@ -1183,8 +1380,30 @@ class JuniperTest(unittest.TestCase):
 
     mock_debug.assert_called_once_with(
         'Term icmptype-mismatch will not be rendered,'
-        ' as it has icmp match specified but '
+        ' as it has  match specified but '
         'the ACL is of inet6 address family.')
+
+  @mock.patch.object(juniper.logging, 'debug')
+  def testIcmpTCPInet6Mismatch(self, mock_debug):
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER_V6 + BAD_ICMPTYPE_TERM_3, self.naming),
+        EXP_INFO,
+    )
+    # output happens in __str_
+    output = str(jcl)
+    self.assertIn('tcp', output, output)
+    self.assertNotIn('next-header icmp', output, output)
+
+  @mock.patch.object(juniper.logging, 'debug')
+  def testIcmpv6TCPInetMismatch(self, mock_debug):
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(GOOD_HEADER + BAD_ICMPTYPE_TERM_4, self.naming),
+        EXP_INFO,
+    )
+    # output happens in __str_
+    output = str(jcl)
+    self.assertIn('tcp', output, output)
+    self.assertNotIn('next-header icmp6', output, output)
 
   @mock.patch.object(juniper.logging, 'warning')
   def testExpiredTerm(self, mock_warn):
@@ -1197,7 +1416,8 @@ class JuniperTest(unittest.TestCase):
 
   @mock.patch.object(juniper.logging, 'info')
   def testExpiringTerm(self, mock_info):
-    exp_date = datetime.date.today() + datetime.timedelta(weeks=EXP_INFO)
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    exp_date = current_date + datetime.timedelta(weeks=EXP_INFO)
     _ = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER + EXPIRING_TERM %
                                            exp_date.strftime('%Y-%m-%d'),
                                            self.naming), EXP_INFO)
@@ -1456,6 +1676,14 @@ class JuniperTest(unittest.TestCase):
                                              self.naming), EXP_INFO)
     output = str(jcl)
     self.assertIn('protocol hop-by-hop;', output, output)
+    self.assertNotIn('protocol hopopt;', output, output)
+
+  def testHopOptProtocolExcept(self):
+    jcl = juniper.Juniper(policy.ParsePolicy(GOOD_HEADER + HOPOPT_TERM_EXCEPT,
+                                             self.naming), EXP_INFO)
+    output = str(jcl)
+    self.assertIn('protocol-except hop-by-hop;', output, output)
+    self.assertNotIn('protocol-except hopopt;', output, output)
 
   def testFlexibleMatch(self):
     jcl = juniper.Juniper(policy.ParsePolicy(
@@ -1539,6 +1767,136 @@ class JuniperTest(unittest.TestCase):
                       GOOD_HEADER_V6 + BAD_FLEX_MATCH_TERM_4,
                       self.naming)
 
+  @parameterized.named_parameters(
+      ('MIXED_TO_V4',
+       [[nacaddr.IPv4('0.0.0.0/1'),
+         nacaddr.IPv6('2001::/33')], [nacaddr.IPv4('192.168.0.0/24')]], [
+             '            term good-term {\n' +
+             '                from {\n' +
+             '                    source-address {\n' +
+             '                        0.0.0.0/1;\n' +
+             '                    }\n' +
+             '                    destination-address {\n' +
+             '                        192.168.0.0/24;\n' +
+             '                    }'
+         ], ['2001::/33']),
+      ('V4_TO_MIXED', [
+          [nacaddr.IPv4('192.168.0.0/24')],
+          [nacaddr.IPv4('0.0.0.0/1'),
+           nacaddr.IPv6('2001::/33')],
+      ], [
+          '            term good-term {\n' +
+          '                from {\n' +
+          '                    source-address {\n' +
+          '                        192.168.0.0/24;\n' +
+          '                    }\n' +
+          '                    destination-address {\n' +
+          '                        0.0.0.0/1;\n' +
+          '                    }'
+      ], ['2001::/33']),
+      ('MIXED_TO_V6',
+       [[nacaddr.IPv4('0.0.0.0/1'),
+         nacaddr.IPv6('2001::/33')], [nacaddr.IPv6('2201::/48')]], [
+             '            term good-term {\n' +
+             '                from {\n' +
+             '                    source-address {\n' +
+             '                        2001::/33;\n' +
+             '                    }\n' +
+             '                    destination-address {\n' +
+             '                        2201::/48;\n' +
+             '                    }'
+         ], ['0.0.0.0/1']),
+      ('V6_TO_MIXED', [[
+          nacaddr.IPv6('2201::/48')
+      ], [nacaddr.IPv4('0.0.0.0/1'),
+          nacaddr.IPv6('2001::/33')]], [
+              '            term good-term {\n' +
+              '                from {\n' +
+              '                    source-address {\n' +
+              '                        2201::/48;\n' +
+              '                    }\n' +
+              '                    destination-address {\n' +
+              '                        2001::/33;\n' +
+              '                    }'
+        ], ['0.0.0.0/1']),
+      ('MIXED_TO_MIXED', [[
+          nacaddr.IPv4('0.0.0.0/1'),
+          nacaddr.IPv6('2001::/33')
+      ], [nacaddr.IPv4('192.168.0.0/24'),
+          nacaddr.IPv6('2201::/48')]], [
+              '            term good-term {\n' +
+              '                from {\n' +
+              '                    source-address {\n' +
+              '                        0.0.0.0/1;\n' +
+              '                    }\n' +
+              '                    destination-address {\n' +
+              '                        192.168.0.0/24;\n' +
+              '                    }',
+              '            term good-term {\n' +
+              '                from {\n' +
+              '                    source-address {\n' +
+              '                        2001::/33;\n' +
+              '                    }\n' +
+              '                    destination-address {\n' +
+              '                        2201::/48;\n' +
+              '                    }'
+        ], []),
+      ('V4_TO_V4', [[nacaddr.IPv4('0.0.0.0/1')],
+                    [nacaddr.IPv4('192.168.0.0/24')]], [
+                        '            term good-term {\n' +
+                        '                from {\n' +
+                        '                    source-address {\n' +
+                        '                        0.0.0.0/1;\n' +
+                        '                    }\n' +
+                        '                    destination-address {\n' +
+                        '                        192.168.0.0/24;\n' +
+                        '                    }'
+      ], []),
+      ('V6_TO_V6', [[nacaddr.IPv6('2001::/33')], [nacaddr.IPv6('2201::/48')]], [
+          '            term good-term {\n' +
+          '                from {\n' +
+          '                    source-address {\n' +
+          '                        2001::/33;\n' +
+          '                    }\n' +
+          '                    destination-address {\n' +
+          '                        2201::/48;\n' +
+          '                    }'
+      ], []),
+      (
+          'V4_TO_V6',
+          [[nacaddr.IPv4('0.0.0.0/1')], [nacaddr.IPv6('2201::/48')]],
+          [],
+          ['0.0.0.0/1', '192.168.0.0/24', '2001::/33', '2201::/48'],
+      ),
+      (
+          'V6_TO_V4',
+          [[nacaddr.IPv6('2001::/33')], [nacaddr.IPv4('192.168.0.0/24')]],
+          [],
+          ['0.0.0.0/1', '192.168.0.0/24', '2001::/33', '2201::/48'],
+      ),
+      (
+          'PARTLY_UNSPECIFIED',
+          [[nacaddr.IPv6('2001::/33')], [nacaddr.IPv4('192.168.0.0/24')]],
+          ['term good_term_25 '],
+          [
+              '0.0.0.0/1', '192.168.0.0/24', '2001::/33', '2201::/48',
+              'term good-term-both-icmp-and-icmpv6-'
+          ],
+      ),
+  )
+  def testMixed(self, addresses, expected, notexpected):
+    self.naming.GetNetAddr.side_effect = addresses
+    self.naming.GetServiceByProto.return_value = ['25']
+    jcl = juniper.Juniper(
+        policy.ParsePolicy(
+            GOOD_HEADER_MIXED + MIXED_TESTING_TERM + GOOD_TERM_25, self.naming),
+        EXP_INFO)
+    output = str(jcl)
+    for expect in expected:
+      self.assertIn(expect, output, output)
+    for notexpect in notexpected:
+      self.assertNotIn(notexpect, output, output)
+
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

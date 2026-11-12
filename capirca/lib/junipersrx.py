@@ -16,10 +16,6 @@
 """SRX generator."""
 # pylint: disable=super-init-not-called
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
 
 import collections
 import copy
@@ -74,12 +70,15 @@ class ConflictingTargetOptionsError(Error):
 class ConflictingApplicationSetsError(Error):
   pass
 
+class SRXTooManyCountersError(Error):
+  pass
+
 
 class IndentList(list):
 
   def __init__(self, indent, *args, **kwargs):
     self._indent = indent
-    super(IndentList, self).__init__(*args, **kwargs)
+    super().__init__(*args, **kwargs)
 
   def IndentAppend(self, size, data):
     self.append('%s%s' % (self._indent * size, data))
@@ -104,7 +103,7 @@ class Term(aclgenerator.Term):
              'dscp': 'dscp'}
 
   def __init__(self, term, from_zone, to_zone, expresspath=False, verbose=True):
-    super(Term, self).__init__(term)
+    super().__init__(term)
     self.term = term
     self.from_zone = from_zone
     self.to_zone = to_zone
@@ -115,14 +114,6 @@ class Term(aclgenerator.Term):
 
   def __str__(self):
     """Render config output from this term object."""
-    # Verify platform specific terms. Skip whole term if platform does not
-    # match.
-    if self.term.platform:
-      if 'srx' not in self.term.platform:
-        return ''
-    if self.term.platform_exclude:
-      if 'srx' in self.term.platform_exclude:
-        return ''
     ret_str = IndentList(JuniperSRX.INDENT)
 
     # COMMENTS
@@ -181,6 +172,22 @@ class Term(aclgenerator.Term):
       ret_str.IndentAppend(5, JunipersrxList('dscp-except',
                                              self.term.dscp_except))
 
+    # SOURCE-ZONE
+    if self.term.source_zone:
+      szone_check = set()
+      for szone in self.term.source_zone:
+        szone_check.add(szone)
+      szone_check = sorted(szone_check)
+      ret_str.IndentAppend(5, JunipersrxList('from-zone', szone_check))
+
+    # DESTINATION-ZONE
+    if self.term.destination_zone:
+      dzone_check = set()
+      for dzone in self.term.destination_zone:
+        dzone_check.add(dzone)
+      dzone_check = sorted(dzone_check)
+      ret_str.IndentAppend(5, JunipersrxList('to-zone', dzone_check))
+
     ret_str.IndentAppend(4, '}')
 
     # ACTIONS
@@ -189,7 +196,7 @@ class Term(aclgenerator.Term):
 
       # VPN target can be only specified when ACTION is accept
       if str(action) == 'accept' and self.term.vpn:
-        ret_str.IndentAppend(5, self.ACTIONS.get(
+        ret_str.IndentAppend(5, self.ACTIONS.get(  # pyrefly: ignore[unsupported-operation]
             str(action)) + ' {')
         ret_str.IndentAppend(6, 'tunnel {')
         ret_str.IndentAppend(7, 'ipsec-vpn %s;' % self.term.vpn[0])
@@ -199,7 +206,7 @@ class Term(aclgenerator.Term):
         ret_str.IndentAppend(6, '}')
         ret_str.IndentAppend(5, '}')
       else:
-        ret_str.IndentAppend(5, self.ACTIONS.get(str(action)) + ';')
+        ret_str.IndentAppend(5, self.ACTIONS.get(str(action)) + ';')  # pyrefly: ignore[unsupported-operation]
 
       # DSCP SET
       if self.term.dscp_set:
@@ -218,6 +225,10 @@ class Term(aclgenerator.Term):
             else:
               ret_str.IndentAppend(6, 'session-init;')
         ret_str.IndentAppend(5, '}')
+
+      # COUNTER
+      if self.term.counter:
+        ret_str.IndentAppend(5, 'count;')
 
       ret_str.IndentAppend(4, '}')
 
@@ -306,7 +317,7 @@ class JuniperSRX(aclgenerator.ACLGenerator):
     self.from_zone = ''
     self.to_zone = ''
     self.addr_book_type = set()
-    super(JuniperSRX, self).__init__(pol, exp_info)
+    super().__init__(pol, exp_info)
 
   def _BuildTokens(self):
     """Build supported tokens for platform.
@@ -314,15 +325,18 @@ class JuniperSRX(aclgenerator.ACLGenerator):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(
-        JuniperSRX, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
-    supported_tokens |= {'dscp_except',
+    supported_tokens |= {'counter',
+                         'dscp_except',
                          'dscp_match',
                          'dscp_set',
+                         'destination_zone',
                          'logging',
                          'option',
                          'owner',
+                         'source_zone',
+                         'target_resources',
                          'timeout',
                          'verbatim',
                          'vpn'}
@@ -352,6 +366,7 @@ class JuniperSRX(aclgenerator.ACLGenerator):
       MixedAddrBookTypesError: Global and Zone address books in the same policy
       ConflictingApplicationSetsError: When two duplicate named terms have
                                        conflicting application entries
+      SRXTooManyCountersError: More than 256 terms with counters found
     """
     current_date = datetime.datetime.utcnow().date()
     exp_info_date = current_date + datetime.timedelta(weeks=exp_info)
@@ -387,6 +402,23 @@ class JuniperSRX(aclgenerator.ACLGenerator):
                                      (filter_options[3]))
       else:
         self.to_zone = filter_options[3]
+
+      # check if source-zone & destination-zone are only used with global policy
+      if filter_options[1] != 'all' or filter_options[3] != 'all':
+        for term in terms:
+          if term.source_zone or term.destination_zone:
+            raise UnsupportedFilterError('Term %s has either source-zone or '
+                                         'destination-zone which can only be '
+                                         'used with global policy' % term.name)
+
+      num_counters = 0
+      for term in terms:
+        if term.counter:
+          num_counters += 1
+      if num_counters > 256:
+        raise SRXTooManyCountersError(
+            f'The policy has {num_counters} terms with counters, limit is 256.'
+        )
 
       # variables used to collect target-options and set defaults
       filter_type = ''
@@ -447,6 +479,14 @@ class JuniperSRX(aclgenerator.ACLGenerator):
       new_terms = []
       self._FixLargePolices(terms, filter_type)
       for term in terms:
+        # Only generate the term if it's for the appropriate platform.
+        if term.platform:
+          if self._PLATFORM not in term.platform:
+            continue
+        if term.platform_exclude:
+          if self._PLATFORM in term.platform_exclude:
+            continue
+
         if term.stateless_reply:
           logging.warning(
               "WARNING: Term %s in policy %s>%s is a stateless reply "
@@ -511,7 +551,7 @@ class JuniperSRX(aclgenerator.ACLGenerator):
         if self._GLOBAL_ADDR_BOOK in self.addr_book_type:
           for zone in self.addressbook:
             for unused_name, ips in sorted(
-                six.iteritems(self.addressbook[zone])):
+                self.addressbook[zone].items()):
               ips = [i for i in ips]
               if term.source_address == ips:
                 term.source_address = ips
@@ -871,6 +911,12 @@ class JuniperSRX(aclgenerator.ACLGenerator):
         done_apps.append(app)
         if app_list:
           target.extend(app_list)
+
+
+    if len(done_apps) == 0:
+      target.clear()
+      target.append('delete: applications;')
+      return target
 
     target.extend(apps_set_list)
     target.append('}\n')

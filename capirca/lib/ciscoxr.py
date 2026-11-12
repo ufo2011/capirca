@@ -15,11 +15,6 @@
 
 """Cisco IOS-XR filter renderer."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 from capirca.lib import cisco
 
 
@@ -31,18 +26,25 @@ class CiscoXR(cisco.Cisco):
   SUFFIX = '.xacl'
   _PROTO_INT = False
 
-  def _AppendTargetByFilterType(self, filter_name, filter_type):
+  def _AppendTargetByFilterType(
+      self, filter_name, filter_type, configure_replace_compatible=False):
     """Takes in the filter name and type and appends headers.
 
     Args:
       filter_name: Name of the current filter
       filter_type: Type of current filter
+      configure_replace_compatible: Bool indicating if the resulting config
+        strings should be compatible with the configure replace command.
 
     Returns:
       list of strings
     """
+    # `configure_replace_compatible` is included to satisfy the signature
+    # requirements for cisco.Cisco._AppendTargetByFilterType(). This is not
+    # currently required for the ciscoxr module.
+    del configure_replace_compatible
     target = []
-    if filter_type == 'inet6':
+    if filter_type == 'inet6' or filter_type == 'object-group-inet6':
       target.append('no ipv6 access-list %s' % filter_name)
       target.append('ipv6 access-list %s' % filter_name)
     else:
@@ -56,15 +58,15 @@ class CiscoXR(cisco.Cisco):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(CiscoXR, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
-    supported_tokens |= {'next_ip'}
+    supported_tokens |= {'next_ip', 'fragment_offset'}
 
     return supported_tokens, supported_sub_tokens
 
-  def _GetObjectGroupTerm(self, term, filter_name, verbose=True):
+  def _GetObjectGroupTerm(self, term, filter_name, af=4, verbose=True):
     """Returns an ObjectGroupTerm object."""
-    return CiscoXRObjectGroupTerm(term, filter_name,
+    return CiscoXRObjectGroupTerm(term, filter_name, af=af,
                                   platform=self._PLATFORM, verbose=verbose)
 
 

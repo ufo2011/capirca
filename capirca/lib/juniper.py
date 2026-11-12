@@ -15,18 +15,12 @@
 
 """Juniper JCL generator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 from capirca.lib import summarizer
 import six
-from six.moves import range
 
 
 # generic error class
@@ -70,7 +64,7 @@ class JuniperFragmentInV6Error(Error):
   pass
 
 
-class Config(object):
+class Config:
   """Config allows a configuration to be assembled easily.
 
   Configurations are automatically indented following Juniper's style.
@@ -133,6 +127,10 @@ class Term(aclgenerator.Term):
     term_type: String indicating type of term, inet, inet6 icmp etc.
     enable_dsmo: Boolean to enable dsmo.
     noverbose: Boolean to disable verbosity.
+    filter_direction: Enum indicating the direction of the filter on an
+      interface e.g. INGRESS.
+    interface_type: Enum indicating the type of interface filter will be applied
+      e.g. LOOPBACK.
   """
   _PLATFORM = 'juniper'
   _DEFAULT_INDENT = 12
@@ -141,7 +139,9 @@ class Term(aclgenerator.Term):
              'reject': 'reject',
              'next': 'next term',
              'reject-with-tcp-rst': 'reject tcp-reset',
-             'encapsulate': 'encapsulate'}
+             'encapsulate': 'encapsulate',
+             'decapsulate': 'decapsulate',
+             'port-mirror': 'port-mirror'}
 
   # the following lookup table is used to map between the various types of
   # filters the juniper generator can render.  As new differences are
@@ -169,28 +169,36 @@ class Term(aclgenerator.Term):
                            'daddr': 'ip-destination-address',
                            'protocol': 'ip-protocol',
                            'protocol-except': 'ip-protocol-except',
-                           'tcp-est': 'tcp-flags "(ack|rst)"'}}
+                           'tcp-est': 'tcp-flags "(ack|rst)"'}
+              }
 
-  def __init__(self, term, term_type, enable_dsmo, noverbose):
-    super(Term, self).__init__(term)
+  def __init__(self, term, term_type, enable_dsmo, noverbose, filter_direction=None, interface_type=None):
+    super().__init__(term)
     self.term = term
     self.term_type = term_type
     self.enable_dsmo = enable_dsmo
     self.noverbose = noverbose
+    # Filter direction and interface type are needed in juniperevo sub-class for IPv6 filters.
+    self.filter_direction = filter_direction
+    self.interface_type = interface_type
 
-    if term_type not in self._TERM_TYPE:
-      raise ValueError('Unknown Filter Type: %s' % term_type)
-    if 'hopopt' in self.term.protocol:
-      loc = self.term.protocol.index('hopopt')
-      self.term.protocol[loc] = 'hop-by-hop'
+    if self._PLATFORM != 'msmpc':
+      if term_type not in self._TERM_TYPE:
+        raise ValueError('Unknown Filter Type: %s' % term_type)
+      if 'hopopt' in self.term.protocol:
+        loc = self.term.protocol.index('hopopt')
+        self.term.protocol[loc] = 'hop-by-hop'
+      if 'hopopt' in self.term.protocol_except:
+        loc = self.term.protocol_except.index('hopopt')
+        self.term.protocol_except[loc] = 'hop-by-hop'
 
-    # some options need to modify the actions
-    self.extra_actions = []
+      # some options need to modify the actions
+      self.extra_actions = []
 
   # TODO(pmoody): get rid of all of the default string concatenation here.
   #  eg, indent(8) + 'foo;' -> '%s%s;' % (indent(8), 'foo'). pyglint likes this
   #  more.
-  def __str__(self):
+  def __str__(self, term_type_table=None):
     # Verify platform specific terms. Skip whole term if platform does not
     # match.
     if self.term.platform:
@@ -203,9 +211,17 @@ class Term(aclgenerator.Term):
     config = Config(indent=self._DEFAULT_INDENT)
     from_str = []
     # Don't render icmpv6 protocol terms under inet, or icmp under inet6
-    if ((self.term_type == 'inet6' and 'icmp' in self.term.protocol) or
-        (self.term_type == 'inet' and ('icmpv6' in self.term.protocol or
-                                       'icmp6' in self.term.protocol))):
+    icmp_mismatch_pruned = False
+    if (self.term_type == 'inet6' and 'icmp' in self.term.protocol):
+      self.term.protocol.remove('icmp')
+      icmp_mismatch_pruned = True
+    if (self.term_type == 'inet' and 'icmpv6' in self.term.protocol):
+      self.term.protocol.remove('icmpv6')
+      icmp_mismatch_pruned = True
+    if (self.term_type == 'inet' and 'icmp6' in self.term.protocol):
+      self.term.protocol.remove('icmp6')
+      icmp_mismatch_pruned = True
+    if not self.term.protocol and icmp_mismatch_pruned:
       logging.debug(self.NO_AF_LOG_PROTO.substitute(
           term=self.term.name,
           proto=', '.join(self.term.protocol),
@@ -235,7 +251,9 @@ class Term(aclgenerator.Term):
       return str(config)
 
     # Helper for per-address-family keywords.
-    family_keywords = self._TERM_TYPE.get(self.term_type)
+    if term_type_table is None:
+      term_type_table = self._TERM_TYPE
+    family_keywords = term_type_table.get(self.term_type)
 
     # option
     # this is going to be a little ugly b/c there are a few little messed
@@ -251,12 +269,12 @@ class Term(aclgenerator.Term):
         elif opt.startswith('established'):
           if self.term.protocol == ['tcp']:
             if 'tcp-established;' not in from_str:
-              from_str.append(family_keywords['tcp-est'] + ';')
+              from_str.append(family_keywords['tcp-est'] + ';')  # pyrefly: ignore[unsupported-operation]
 
         # if tcp-established specified, but more than just tcp is included
         # in the protocols, raise an error
         elif opt.startswith('tcp-established'):
-          flag = family_keywords['tcp-est'] + ';'
+          flag = family_keywords['tcp-est'] + ';'  # pyrefly: ignore[unsupported-operation]
           if self.term.protocol == ['tcp']:
             if flag not in from_str:
               from_str.append(flag)
@@ -283,7 +301,13 @@ class Term(aclgenerator.Term):
       term_prefix = ''
 
     # term name
-    config.Append('%s term %s {' %(term_prefix, self.term.name))
+    config.Append('%s term %s {' % (term_prefix, self.term.name))
+
+    # The "filter" keyword is not compatible with from or then
+    if self.term.filter_term:
+      config.Append('filter %s;' % self.term.filter_term)
+      config.Append('}')  # end term accept-foo-to-bar { ... }
+      return str(config)
 
     # a default action term doesn't have any from { clause
     has_match_criteria = (self.term.address or
@@ -323,7 +347,7 @@ class Term(aclgenerator.Term):
         address = summarizer.Summarize(address)
 
       if address:
-        config.Append('%s {' % family_keywords['addr'])
+        config.Append('%s {' % family_keywords['addr'])  # pyrefly: ignore[unsupported-operation]
         for addr in address:
           for comment in self._Comment(addr):
             config.Append('%s' % comment)
@@ -349,7 +373,7 @@ class Term(aclgenerator.Term):
         src_addr, src_addr_ex = self._MinimizePrefixes(src_addr, src_addr_ex)
 
       if src_addr:
-        config.Append('%s {' % family_keywords['saddr'])
+        config.Append('%s {' % family_keywords['saddr'])  # pyrefly: ignore[unsupported-operation]
         for addr in src_addr:
           for comment in self._Comment(addr):
             config.Append('%s' % comment)
@@ -383,7 +407,7 @@ class Term(aclgenerator.Term):
         dst_addr, dst_addr_ex = self._MinimizePrefixes(dst_addr, dst_addr_ex)
 
       if dst_addr:
-        config.Append('%s {' % family_keywords['daddr'])
+        config.Append('%s {' % family_keywords['daddr'])  # pyrefly: ignore[unsupported-operation]
         for addr in dst_addr:
           for comment in self._Comment(addr):
             config.Append('%s' % comment)
@@ -439,19 +463,6 @@ class Term(aclgenerator.Term):
       if self.term.ttl and self.term_type == 'inet':
         config.Append('ttl %s;' % self.term.ttl)
 
-      # protocol
-      if self.term.protocol:
-        # both are supported on JunOS, but only icmp6 is supported
-        # on SRX loopback stateless filter
-        config.Append(family_keywords['protocol'] +
-                      ' ' + self._Group(self.term.protocol))
-
-      # protocol
-      if self.term.protocol_except:
-        # same as above
-        config.Append(family_keywords['protocol-except'] + ' '
-                      + self._Group(self.term.protocol_except))
-
       # port
       if self.term.port:
         config.Append('port %s' % self._Group(self.term.port))
@@ -489,6 +500,24 @@ class Term(aclgenerator.Term):
       if self.term.ether_type:
         config.Append('ether-type %s' %
                       self._Group(self.term.ether_type))
+      # protocol
+      if self.term.protocol:
+        # both are supported on JunOS, but only icmp6 is supported
+        # on SRX loopback stateless filter, so set all instances of icmpv6 to icmp6.
+        if 'icmpv6' in self.term.protocol:
+          loc = self.term.protocol.index('icmpv6')
+          self.term.protocol[loc] = 'icmp6'
+        config.Append(family_keywords['protocol'] + ' ' +  # pyrefly: ignore[unsupported-operation]
+                      self._Group(self.term.protocol))
+
+      # protocol
+      if self.term.protocol_except:
+        # same as above
+        if 'icmpv6' in self.term.protocol_except:
+          loc = self.term.protocol_except.index('icmpv6')
+          self.term.protocol_except[loc] = 'icmp6'
+        config.Append(family_keywords['protocol-except'] + ' ' +  # pyrefly: ignore[unsupported-operation]
+                      self._Group(self.term.protocol_except))
 
       if self.term.traffic_type:
         config.Append('traffic-type %s' %
@@ -554,11 +583,15 @@ class Term(aclgenerator.Term):
       unique_actions.update(self.term.action)
     if self.term.encapsulate:
       unique_actions.add('encapsulate')
+    if self.term.decapsulate:
+      unique_actions.add('decapsulate')
     if len(unique_actions) <= 1:
-      for action in [self.term.logging, self.term.routing_instance,
-                     self.term.counter, self.term.policer, self.term.qos,
-                     self.term.loss_priority, self.term.dscp_set,
-                     self.term.next_ip, self.term.traffic_class_count]:
+      for action in [
+          self.term.logging, self.term.routing_instance, self.term.counter,
+          self.term.policer, self.term.qos, self.term.loss_priority,
+          self.term.dscp_set, self.term.next_ip, self.term.traffic_class_count,
+          self.term.port_mirror
+      ]:
         if action:
           try:
             unique_actions.update(action)
@@ -596,6 +629,10 @@ class Term(aclgenerator.Term):
         config.Append('then {')
         config.Append('encapsulate %s;' % str(self.term.encapsulate))
         config.Append('}')
+      elif current_action == 'decapsulate':
+        config.Append('then {')
+        config.Append('decapsulate %s;' % str(self.term.decapsulate))
+        config.Append('}')
       else:
         config.Append('then %s;' % current_action)
     elif len(unique_actions) > 1:
@@ -629,6 +666,8 @@ class Term(aclgenerator.Term):
       if self.term.qos:
         config.Append('forwarding-class %s;' % self.term.qos)
 
+      if self.term.port_mirror:
+        config.Append('port-mirror;')
       if self.term.loss_priority:
         config.Append('loss-priority %s;' % self.term.loss_priority)
       if self.term.next_ip:
@@ -639,13 +678,15 @@ class Term(aclgenerator.Term):
           config.Append('next-ip6 %s;' % str(self.term.next_ip[0]))
       if self.term.encapsulate:
         config.Append('encapsulate %s;' % str(self.term.encapsulate))
+      if self.term.decapsulate:
+        config.Append('decapsulate %s;' % str(self.term.decapsulate))
       for action in self.extra_actions:
         config.Append(action + ';')
 
       # If there is a routing-instance defined, skip reject/accept/etc actions.
       if not self.term.routing_instance:
         for action in self.term.action:
-          config.Append(self.ACTIONS.get(action) + ';')
+          config.Append(self.ACTIONS.get(action) + ';')  # pyrefly: ignore[unsupported-operation]
 
       # DSCP SET
       if self.term.dscp_set:
@@ -673,6 +714,8 @@ class Term(aclgenerator.Term):
     action = set(self.term.action)
     if self.term.encapsulate:
       action.add(self.term.encapsulate)
+    if self.term.decapsulate:
+      action.add(self.term.decapsulate)
     if self.term.routing_instance:
       action.add(self.term.routing_instance)
     if len(action) > 1:
@@ -830,7 +873,7 @@ class Term(aclgenerator.Term):
         string: either the lower()'ed string or the ports, hyphenated
                 if they're a range, or by itself if it's not.
       """
-      if isinstance(el, str) or isinstance(el, six.text_type):
+      if isinstance(el, str) or isinstance(el, str):
         if lc:
           return el
         else:
@@ -862,7 +905,7 @@ class Juniper(aclgenerator.ACLGenerator):
 
   _PLATFORM = 'juniper'
   _DEFAULT_PROTOCOL = 'ip'
-  _SUPPORTED_AF = set(('inet', 'inet6', 'bridge'))
+  _SUPPORTED_AF = frozenset(('inet', 'inet6', 'bridge', 'mixed'))
   _TERM = Term
   SUFFIX = '.jcl'
 
@@ -872,10 +915,12 @@ class Juniper(aclgenerator.ACLGenerator):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(Juniper, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
     supported_tokens |= {'address',
+                         'restrict_address_family',
                          'counter',
+                         'decapsulate',
                          'destination_prefix',
                          'destination_prefix_except',
                          'dscp_except',
@@ -883,6 +928,7 @@ class Juniper(aclgenerator.ACLGenerator):
                          'dscp_set',
                          'encapsulate',
                          'ether_type',
+                         'filter_term',
                          'flexible_match_range',
                          'forwarding_class',
                          'forwarding_class_except',
@@ -896,12 +942,14 @@ class Juniper(aclgenerator.ACLGenerator):
                          'packet_length',
                          'policer',
                          'port',
+                         'port_mirror',
                          'precedence',
                          'protocol_except',
                          'qos',
                          'routing_instance',
                          'source_prefix',
                          'source_prefix_except',
+                         'target_resources',
                          'traffic_type',
                          'traffic_class_count',
                          'ttl'}
@@ -916,7 +964,7 @@ class Juniper(aclgenerator.ACLGenerator):
             'tcp-established',
             'tcp-initial',
             'inactive'}
-        })
+         })
     return supported_tokens, supported_sub_tokens
 
   def _TranslatePolicy(self, pol, exp_info):
@@ -936,58 +984,91 @@ class Juniper(aclgenerator.ACLGenerator):
       interface_specific = 'not-interface-specific' not in filter_options[1:]
       enable_dsmo = 'enable_dsmo' in filter_options[1:]
       noverbose = 'noverbose' in filter_options[1:]
+      filter_enhanced_mode = 'filter_enhanced_mode' in filter_options[1:]
+
+      filter_direction = None
+      if 'ingress' in filter_options[1:]:
+        filter_direction = 'ingress'
+      elif 'egress' in filter_options[1:]:
+        filter_direction = 'egress'
+      interface_type = None
+      if 'physical' in filter_options[1:]:
+        interface_type = 'physical'
+      elif 'loopback' in filter_options[1:]:
+        interface_type = 'loopback'
 
       if not interface_specific:
         filter_options.remove('not-interface-specific')
       if enable_dsmo:
         filter_options.remove('enable_dsmo')
+      if filter_enhanced_mode:
+        filter_options.remove('filter_enhanced_mode')
 
       # default to inet4 filters
       filter_type = 'inet'
       if len(filter_options) > 1:
         filter_type = filter_options[1]
 
-      term_names = set()
-      new_terms = []
-      for term in terms:
+      if filter_type == 'mixed':
+        filter_types_to_process = ['inet', 'inet6']
+      else:
+        filter_types_to_process = [filter_type]
 
-        # if inactive is set, deactivate the term and remove the option.
-        if 'inactive' in term.option:
-          term.inactive = True
-          term.option.remove('inactive')
+      for filter_type in filter_types_to_process:
 
-        term.name = self.FixTermLength(term.name)
+        filter_name_suffix = ''
+        # If mixed filter_type, will append 4 or 6 to the filter name
+        if len(filter_types_to_process) > 1:
+          if filter_type == 'inet':
+            filter_name_suffix = '4'
+          if filter_type == 'inet6':
+            filter_name_suffix = '6'
 
-        if term.name in term_names:
-          raise JuniperDuplicateTermError('You have multiple terms named: %s' %
-                                          term.name)
-        term_names.add(term.name)
+        term_names = set()
+        new_terms = []
+        for term in terms:
 
-        term = self.FixHighPorts(term, af=filter_type)
-        if not term:
-          continue
-
-        if term.expiration:
-          if term.expiration <= exp_info_date:
-            logging.info('INFO: Term %s in policy %s expires '
-                         'in less than two weeks.', term.name, filter_name)
-          if term.expiration <= current_date:
-            logging.warning('WARNING: Term %s in policy %s is expired and '
-                            'will not be rendered.', term.name, filter_name)
+          # Ignore if the term is for a different AF
+          if term.restrict_address_family and term.restrict_address_family != filter_type:
             continue
-        if 'is-fragment' in term.option and filter_type == 'inet6':
-          raise JuniperFragmentInV6Error('The term %s uses "is-fragment" but '
-                                         'is a v6 policy.' % term.name)
 
-        new_terms.append(self._TERM(term, filter_type, enable_dsmo, noverbose))
+          # if inactive is set, deactivate the term and remove the option.
+          if 'inactive' in term.option:
+            term.inactive = True
+            term.option.remove('inactive')
 
-      self.juniper_policies.append((header, filter_name, filter_type,
-                                    interface_specific, new_terms))
+          term.name = self.FixTermLength(term.name)
+
+          if term.name in term_names:
+            raise JuniperDuplicateTermError('You have multiple terms named: %s' %
+                                            term.name)
+          term_names.add(term.name)
+
+          term = self.FixHighPorts(term, af=filter_type)
+          if not term:
+            continue
+
+          if term.expiration:
+            if term.expiration <= exp_info_date:
+              logging.info('INFO: Term %s in policy %s expires '
+                          'in less than two weeks.', term.name, filter_name)
+            if term.expiration <= current_date:
+              logging.warning('WARNING: Term %s in policy %s is expired and '
+                              'will not be rendered.', term.name, filter_name)
+              continue
+          if 'is-fragment' in term.option and filter_type == 'inet6':
+            raise JuniperFragmentInV6Error('The term %s uses "is-fragment" but '
+                                          'is a v6 policy.' % term.name)
+
+          new_terms.append(self._TERM(term, filter_type, enable_dsmo, noverbose, filter_direction, interface_type))
+
+        self.juniper_policies.append((header, filter_name + filter_name_suffix, filter_type,
+                                      interface_specific, filter_enhanced_mode, new_terms))
 
   def __str__(self):
     config = Config()
 
-    for (header, filter_name, filter_type, interface_specific, terms
+    for (header, filter_name, filter_type, interface_specific, filter_enhanced_mode, terms
         ) in self.juniper_policies:
       # add the header information
       config.Append('firewall {')
@@ -1010,6 +1091,8 @@ class Juniper(aclgenerator.ACLGenerator):
       config.Append('replace: filter %s {' % filter_name)
       if interface_specific:
         config.Append('interface-specific;')
+      if filter_enhanced_mode:
+        config.Append('enhanced-mode;')
 
       for term in terms:
         term_str = str(term)

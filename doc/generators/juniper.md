@@ -28,11 +28,14 @@ target:: juniper [filter name] {inet|inet6|bridge} {dsmo} {not-interface-specifi
   * _bridge_: specifies the output should render a Juniper bridge filter.
   * _dsmo_: Enable discontinuous subnet mask summarization.
   * _not-interface-specific_: Toggles "interface-specific" inside of a term.
+  * _direction_: The direction of the filter on an interface (optional). Use when a term needs this signal.
+  * _interface_: The type of interface on which the filter will be applied (optional). Use when a term needs this signal.
 When _inet4_ or _inet6_ is specified, naming tokens with both IPv4 and IPv6 filters will be rendered using only the specified addresses.
 The default format is _inet4_, and is implied if not other argument is given.
 ## Term Format
 * _action::_ The action to take when matched. See Actions section for valid options.
 * _address::_ One or more network address tokens, matches source or destination.
+* _restrict-address-family::_ Only include the term in the matching address family filter (eg. for mixed filters).
 * _comment::_ A text comment enclosed in double-quotes.  The comment can extend over multiple lines if desired, until a closing quote is encountered.
 * _counter::_ Update a counter for matching packets
 * _destination-address::_ One or more destination address tokens
@@ -45,6 +48,7 @@ The default format is _inet4_, and is implied if not other argument is given.
 * _dscp_set::_ Match a DSCP set.
 * _ether_type::_ Match EtherType field.
 * _expiration::_ stop rendering this term after specified date. [YYYY](YYYY.md)-[MM](MM.md)-[DD](DD.md)
+* _filter-term::_ Include another filter
 * _flexible-match-range Filter based on flexible match options.
 * _forwarding-class::_ Specify the forwarding class to match.
 * _forwarding-class_except::_ Do not match the specified forwarding classes.
@@ -63,6 +67,7 @@ The default format is _inet4_, and is implied if not other argument is given.
 *_platform-exclude:: one or more target platforms for which this term should NEVER be rendered.
 * _policer::_ specify which policer to apply to matching packets.
 * _port::_ Matches on source or destination ports. Takes a service token.
+* _port-mirror::_ Sends copies of the packets to a remote port, boolean value is used to render this config.
 * _precedence::_ specify precedence of range 0-7.  May be a single integer, or a space separated list.
 * _protocol::_ the network protocols this term will match, such as tcp, udp, icmp, or a numeric value.
 * _protocol\_except::_ allow all protocol "except" specified.
@@ -91,4 +96,3 @@ The default format is _inet4_, and is implied if not other argument is given.
 * _sample::_ Samples traffic for netflow.
 * _tcp-established::_ Only match established tcp connections, based on statefull match or TCP flags. Not supported for other protocols.
 * _tcp-initial::_ Only match initial packet for TCP protocol.
-

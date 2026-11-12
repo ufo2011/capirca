@@ -15,11 +15,6 @@
 
 """A subclass of the ipaddress library that includes comments for ipaddress."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import collections
 import ipaddress
 import itertools
@@ -43,14 +38,19 @@ def IP(ip, comment='', token='', strict=True):
   Raises:
     ValueError: if the string passed isn't either a v4 or a v6 address.
   """
-  if isinstance(ip, ipaddress._BaseNetwork):  # pylint disable=protected-access
-    imprecise_ip = ip
-  else:
-    imprecise_ip = ipaddress.ip_network(ip, strict=strict)
-  if imprecise_ip.version == 4:
+  if isinstance(ip, str):
+    if ':' in ip:
+      return IPv6(ip, comment, token, strict=strict)
     return IPv4(ip, comment, token, strict=strict)
-  elif imprecise_ip.version == 6:
+  if isinstance(ip, ipaddress.IPv4Network):
+    return IPv4(ip, comment, token, strict=strict)
+  if isinstance(ip, ipaddress.IPv6Network):
     return IPv6(ip, comment, token, strict=strict)
+  imprecise_ip = ipaddress.ip_network(ip, strict=strict)
+  if isinstance(imprecise_ip, ipaddress.IPv4Network):
+    return IPv4(imprecise_ip, comment, token, strict=strict)
+  if isinstance(imprecise_ip, ipaddress.IPv6Network):
+    return IPv6(imprecise_ip, comment, token, strict=strict)
   raise ValueError('Provided IP string "%s" is not a valid v4 or v6 address'
                    % ip)
 
@@ -80,10 +80,10 @@ class IPv4(ipaddress.IPv4Network):
     # Using a tuple of IP integer/prefixlength is significantly faster than
     # using the BaseNetwork object for recreating the IP network
     if isinstance(ip_string, ipaddress._BaseNetwork):  # pylint disable=protected-access
-      ip = (ip_string.network_address._ip, ip_string.prefixlen)  # pylint disable=protected-access # pytype: disable=attribute-error
+      ip = (ip_string.network_address._ip, ip_string.prefixlen)  # pylint disable=protected-access
     else:
       ip = ip_string
-    super(IPv4, self).__init__(ip, strict)
+    super().__init__(ip, strict)
 
   def subnet_of(self, other):
     """Return True if this network is a subnet of other."""
@@ -118,7 +118,7 @@ class IPv4(ipaddress.IPv4Network):
     else:
       self.text = comment
 
-  def supernet(self, prefixlen_diff=1):
+  def supernet(self, prefixlen_diff=1):  # pyrefly: ignore[bad-override]
     """Override ipaddress.IPv4 supernet so we can maintain comments.
 
     See ipaddress.IPv4.Supernet for complete documentation.
@@ -159,10 +159,10 @@ class IPv6(ipaddress.IPv6Network):
     # Using a tuple of IP integer/prefixlength is significantly faster than
     # using the BaseNetwork object for recreating the IP network
     if isinstance(ip_string, ipaddress._BaseNetwork):  # pylint disable=protected-access
-      ip = (ip_string.network_address._ip, ip_string.prefixlen)  # pylint disable=protected-access # pytype: disable=attribute-error
+      ip = (ip_string.network_address._ip, ip_string.prefixlen)  # pylint disable=protected-access
     else:
       ip = ip_string
-    super(IPv6, self).__init__(ip, strict)
+    super().__init__(ip, strict)
 
   def subnet_of(self, other):
     """Return True if this network is a subnet of other."""
@@ -183,7 +183,7 @@ class IPv6(ipaddress.IPv6Network):
     result.parent_token = self.parent_token
     return result
 
-  def supernet(self, prefixlen_diff=1):
+  def supernet(self, prefixlen_diff=1):  # pyrefly: ignore[bad-override]
     """Override ipaddress.IPv6Network supernet so we can maintain comments.
 
     See ipaddress.IPv6Network.Supernet for complete documentation.
@@ -418,7 +418,7 @@ def RemoveAddressFromList(superset, exclude):
       ret_array.extend(IP(x) for x in iputils.exclude_address(addr, exclude))
     else:
       ret_array.append(addr)
-  return sorted(ret_array)
+  return SortAddrList(ret_array)
 
 
 def AddressListExclude(superset, excludes, collapse_addrs=True):

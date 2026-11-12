@@ -14,24 +14,24 @@ jobs:
     strategy:
       fail-fast: true
       matrix:
-        python-version: [3.6.13, 3.7, 3.8, 3.9]
+        python-version: ['3.11', '3.12', '3.13', '3.14']
 
     steps:
     - name: Checkout branch with changes
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         path: current
     - name: Checkout master branch
-      uses: actions/checkout@v2
+      uses: actions/checkout@v4
       with:
         path: master
         ref: master
     - name: Set up Node.js
-      uses: actions/setup-node@v2
+      uses: actions/setup-node@v4
       with:
-        node-version: '14'
+        node-version: '22'
     - name: Set up Python ${{ matrix.python-version }}
-      uses: actions/setup-python@v2
+      uses: actions/setup-python@v5
       with:
         python-version: ${{ matrix.python-version }}
     - name: Setup environment variables
@@ -67,7 +67,7 @@ jobs:
         python3 -m pip -v install dist/capirca*py3*.whl
         aclgen --output_directory ./output --logtostderr
         cd ./output/ && \
-          zip -r ../../artifacts/capirca_output_${{ env.wfdt }}.zip .
+          zip -r ../../artifacts/capirca_output_${wfdt}.zip .
         cd ..
         python3 -m pip -v uninstall -y capirca
     - name: Perform end-to-end testing with master branch
@@ -81,23 +81,25 @@ jobs:
     - name: Compare output files between the branches
       run: |
         mkdir -p artifacts-diff
-        sudo npm install -g diff2html diff2html-cli
+        npm install -g diff2html diff2html-cli
         diff2html --version
         diff -qr current/output master/output > \
-          ./artifacts-diff/policy_output.diff | true
-        cat ./artifacts-diff/policy_output.diff | grep Files | grep differ \
-          | cut -d" " -f2 | cut -d "/" -f3 > ./artifacts-diff/files.list
-        while read p; do diff -u master/output/$p current/output/$p | \
-          diff2html -i stdin --file ./artifacts-diff/$p.html | \
-          true; done < ./artifacts-diff/files.list
+          ./artifacts-diff/policy_output.diff || true
+        (grep '^Files .* differ$' ./artifacts-diff/policy_output.diff \
+          | cut -d" " -f2 | cut -d "/" -f3 || true) > ./artifacts-diff/files.list
+        while read p; do
+          [ -z "$p" ] && continue
+          (diff -u "master/output/$p" "current/output/$p" || true) | \
+            diff2html -i stdin --file "./artifacts-diff/$p.html"
+        done < ./artifacts-diff/files.list
         sed -i '/Diff to HTML by/d' ./artifacts-diff/*
     - name: Upload generated policies
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
         name: capirca_output_${{ matrix.python-version }}_${{ env.wfdt }}
         path: ./artifacts/capirca_output_${{ env.wfdt }}.zip
     - name: Upload policy differences
-      uses: actions/upload-artifact@v2
+      uses: actions/upload-artifact@v4
       with:
-        name: capirca_output_policy_diff
+        name: capirca_output_policy_diff_${{ matrix.python-version }}
         path: ./artifacts-diff

@@ -14,22 +14,17 @@
 
 """Unittest for cisco acl rendering module."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import re
-import unittest
+import textwrap
+from unittest import mock
 
+from absl.testing import absltest
 from capirca.lib import aclgenerator
 from capirca.lib import cisco
 from capirca.lib import nacaddr
 from capirca.lib import naming
 from capirca.lib import policy
-import mock
-from six.moves import range
 
 
 GOOD_HEADER = """
@@ -56,10 +51,22 @@ header {
   target:: cisco 50 standard
 }
 """
-GOOD_OBJGRP_HEADER = """
+GOOD_OBJGRP_HEADER_1 = """
 header {
   comment:: "obj group header test"
   target:: cisco objgroupheader object-group
+}
+"""
+GOOD_OBJGRP_DEDUP_HEADER = """
+header {
+  comment:: "obj group header test"
+  target:: cisco objgroupheader object-group remove_duplicate_network_objectgroups
+}
+"""
+GOOD_OBJGRP_HEADER_2 = """
+header {
+  comment:: "obj group header test"
+  target:: cisco objgroupheader object-group-inet6
 }
 """
 GOOD_INET6_HEADER = """
@@ -140,6 +147,30 @@ header {
   target:: cisco test-filter
 }
 """
+GOOD_CONFIGURE_REPLACE_COMPATIBLE_HEADER = """
+header {
+  comment:: "this is a configure_replace_compatible test acl"
+  target:: cisco configure_replace_compatible_acl mixed configure_replace_compatible
+}
+"""
+GOOD_ENABLE_SEQUENCE_NUMBERS_HEADER_MIXED = """
+header {
+  comment:: "this is an enable_sequence_numbers test acl"
+  target:: cisco enable_sequence_numbers_acl mixed enable_sequence_numbers
+}
+"""
+GOOD_ENABLE_SEQUENCE_NUMBERS_HEADER_STANDARD = """
+header {
+  comment:: "this is an enable_sequence_numbers test acl"
+  target:: cisco enable_sequence_numbers_acl standard enable_sequence_numbers
+}
+"""
+GOOD_PORT_NAMES_HEADER = """
+header {
+  comment:: "this is a port_names test acl"
+  target:: cisco port_names_acl extended configure_replace_compatible
+}
+"""
 GOOD_STANDARD_TERM_1 = """
 term standard-term-1 {
   address:: SOME_HOST
@@ -193,6 +224,15 @@ GOOD_TERM_2 = """
 term good-term-2 {
   protocol:: tcp
   destination-address:: SOME_HOST
+  source-port:: HTTP
+  option:: established
+  action:: accept
+}
+"""
+GOOD_TERM_2_DUPE = """
+term good-term-2-dupe {
+  protocol:: tcp
+  destination-address:: SOME_HOST2
   source-port:: HTTP
   option:: established
   action:: accept
@@ -338,9 +378,94 @@ term good_term_22 {
   action:: accept
 }
 """
+GOOD_TERM_23 = """
+term good_term_23 {
+  protocol:: tcp
+  destination-address:: SOME_HOST
+  restrict-address-family:: inet
+  action:: accept
+}
+"""
+GOOD_TERM_24 = """
+term good_term_24 {
+  protocol:: ipip
+  destination-address:: SOME_HOST
+  action:: accept
+}
+"""
 LONG_COMMENT_TERM = """
 term long-comment-term {
   comment:: "%s "
+  action:: accept
+}
+"""
+GOOD_TERM_25_PROTOCOLS_IPV4 = """
+term good_term_25 {
+  protocol:: ah esp eigrp ggp gre icmp igmp ipcomp nos ospf pim tcp udp
+  action:: accept
+}
+"""
+GOOD_TERM_26_PROTOCOLS_IPV6 = """
+term good_term_26 {
+  protocol:: ah esp ggp hopopt icmpv6 ipcomp ospf sctp tcp udp
+  action:: accept
+}
+"""
+GOOD_TERM_27_TCP_PORTS = """
+term good_term_27 {
+  protocol:: tcp
+  destination-port:: SOME_PORTS
+  action:: accept
+}
+"""
+GOOD_TERM_28_UDP_PORTS = """
+term good_term_28 {
+  protocol:: udp
+  destination-port:: SOME_PORTS
+  action:: accept
+}
+"""
+GOOD_TERM_29_ICMP_IPV4 = """
+term good_term_icmp_types {
+  protocol:: icmp
+  icmp-type:: echo-reply unreachable source-quench redirect alternate-address echo-request router-advertisement router-solicitation time-exceeded parameter-problem timestamp-request timestamp-reply information-request information-reply mask-request mask-reply traceroute conversion-error mobile-redirect
+  action:: accept
+}
+term good_term_unreachable_codes {
+  protocol:: icmp
+  icmp-type:: unreachable
+  icmp-code:: 0 1 2 3 4 5 6 7 8 9 10 11 12 13 14 15
+  action:: accept
+}
+term good_term_redirect_codes {
+  protocol:: icmp
+  icmp-type:: redirect
+  icmp-code:: 0 1 2 3
+  action:: accept
+}
+term good_term_time-exceeded_codes {
+  protocol:: icmp
+  icmp-type:: time-exceeded
+  icmp-code:: 0 1
+  action:: accept
+}
+term good_term_parameter-problem_codes {
+  protocol:: icmp
+  icmp-type:: parameter-problem
+  icmp-code:: 0 1 2
+  action:: accept
+}
+term good_term_router-advertisement_codes {
+  protocol:: icmp
+  icmp-type:: router-advertisement
+  icmp-code:: 0 16
+  action:: accept
+}
+"""
+GOOD_TERM_30_ICMP_IPV6 = """
+term good_term_30 {
+  protocol:: icmpv6
+  icmp-type:: destination-unreachable packet-too-big time-exceeded parameter-problem echo-request echo-reply multicast-listener-query multicast-listener-report multicast-listener-done router-solicit router-advertisement neighbor-solicit neighbor-advertisement redirect-message router-renumbering icmp-node-information-query icmp-node-information-response inverse-neighbor-discovery-solicitation inverse-neighbor-discovery-advertisement version-2-multicast-listener-report home-agent-address-discovery-request home-agent-address-discovery-reply mobile-prefix-solicitation mobile-prefix-advertisement certification-path-solicitation certification-path-advertisement multicast-router-advertisement multicast-router-solicitation multicast-router-termination
   action:: accept
 }
 """
@@ -364,6 +489,7 @@ SUPPORTED_TOKENS = {
     'platform',
     'platform_exclude',
     'protocol',
+    'restrict_address_family',
     'source_address',
     'source_address_exclude',
     'source_port',
@@ -415,6 +541,7 @@ SUPPORTED_SUB_TOKENS = {
         'time-exceeded',
         'timestamp-reply',
         'timestamp-request',
+        'traceroute',
         'unreachable',
         'version-2-multicast-listener-report',
     },
@@ -429,10 +556,10 @@ SUPPORTED_SUB_TOKENS = {
 EXP_INFO = 2
 
 
-class CiscoTest(unittest.TestCase):
+class CiscoTest(absltest.TestCase):
 
   def setUp(self):
-    super(CiscoTest, self).setUp()
+    super().setUp()
     self.naming = mock.create_autospec(naming.Naming)
 
   def testIPVersion(self):
@@ -505,6 +632,10 @@ class CiscoTest(unittest.TestCase):
                   str(acl))
     self.assertIn('access-list 50 remark standard-term-1', str(acl),
                   str(acl))
+    self.assertIn('access-list 50 remark %sId:%s' % ('$', '$'), str(acl),
+                  str(acl))
+    self.assertNotIn('access-list 50 remark %sRevision:%s' % ('$', '$'),
+                     str(acl), str(acl))
 
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
 
@@ -620,42 +751,230 @@ class CiscoTest(unittest.TestCase):
     port_grp2.append('exit')
 
     self.naming.GetNetAddr.return_value = [
-        nacaddr.IP('10.0.0.0/8', token='SOME_HOST')]
+        nacaddr.IP('10.0.0.0/8', token='SOME_HOST')
+    ]
     self.naming.GetServiceByProto.return_value = ['80']
 
     pol = policy.ParsePolicy(
-        GOOD_OBJGRP_HEADER + GOOD_TERM_2 + GOOD_TERM_18, self.naming)
+        GOOD_OBJGRP_HEADER_1 + GOOD_TERM_2 + GOOD_TERM_18, self.naming
+    )
     acl = cisco.Cisco(pol, EXP_INFO)
-
-    self.assertIn('\n'.join(ip_grp), str(acl), '%s %s' % (
-        '\n'.join(ip_grp), str(acl)))
-    self.assertIn('\n'.join(port_grp1), str(acl), '%s %s' % (
-        '\n'.join(port_grp1), str(acl)))
-    self.assertIn('\n'.join(port_grp2), str(acl), '%s %s' % (
-        '\n'.join(port_grp2), str(acl)))
+    self.assertIn(
+        '\n'.join(ip_grp), str(acl), '%s %s' % ('\n'.join(ip_grp), str(acl))
+    )
+    self.assertIn(
+        '\n'.join(port_grp1),
+        str(acl),
+        '%s %s' % ('\n'.join(port_grp1), str(acl)),
+    )
+    self.assertIn(
+        '\n'.join(port_grp2),
+        str(acl),
+        '%s %s' % ('\n'.join(port_grp2), str(acl)),
+    )
 
     # Object-group terms should use the object groups created.
     self.assertIn(
         ' permit tcp any port-group 80-80 net-group SOME_HOST port-group'
-        ' 1024-65535', str(acl), str(acl))
+        ' 1024-65535',
+        str(acl),
+        str(acl),
+    )
     self.assertIn(
-        ' permit ip net-group SOME_HOST net-group SOME_HOST', str(acl),
-        str(acl))
+        ' permit ip net-group SOME_HOST net-group SOME_HOST', str(acl), str(acl)
+    )
 
     # There should be no addrgroups that look like IP addresses.
     for addrgroup in re.findall(r'net-group ([a-f0-9.:/]+)', str(acl)):
-      self.assertRaises(ValueError, nacaddr.IP(addrgroup))
+      self.assertRaises(ValueError, nacaddr.IP, addrgroup)
 
-    self.naming.GetNetAddr.assert_has_calls([mock.call('SOME_HOST'),
-                                             mock.call('SOME_HOST')])
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('SOME_HOST'), mock.call('SOME_HOST')]
+    )
     self.naming.GetServiceByProto.assert_called_once_with('HTTP', 'tcp')
 
-  def testInet6(self):
-    self.naming.GetNetAddr.return_value = [nacaddr.IP('10.0.0.0/8'),
-                                           nacaddr.IP('2001:4860:8000::/33')]
+  @mock.patch.object(cisco.logging, 'debug')
+  def testObjectGroupIcmpv6InetMismatch(self, mock_debug):
+    acl = cisco.Cisco(
+        policy.ParsePolicy(GOOD_OBJGRP_HEADER_1 + GOOD_TERM_11, self.naming),
+        EXP_INFO,
+    )
 
-    acl = cisco.Cisco(policy.ParsePolicy(GOOD_INET6_HEADER + GOOD_TERM_8,
-                                         self.naming), EXP_INFO)
+    # output happens in __str_
+    str(acl)
+
+    mock_debug.assert_called_once_with(
+        'Term good-term-11 will not be rendered,'
+        ' as it has icmpv6 match specified but '
+        'the ACL is of inet address family.'
+    )
+
+  @mock.patch.object(cisco.logging, 'debug')
+  def testObjectGroupIcmpInet6Mismatch(self, mock_debug):
+    acl = cisco.Cisco(
+        policy.ParsePolicy(GOOD_OBJGRP_HEADER_2 + GOOD_TERM_1, self.naming),
+        EXP_INFO,
+    )
+    # output happens in __str_
+    str(acl)
+
+    mock_debug.assert_called_once_with(
+        'Term good-term-1 will not be rendered,'
+        ' as it has icmp match specified but '
+        'the ACL is of inet6 address family.'
+    )
+
+  def testObjectGroupNoDuplicates(self):
+    ip_grp1 = ['object-group network ipv4 SOME_HOST']
+    ip_grp1.append(' 10.0.0.0/8')
+    ip_grp1.append('exit')
+    ip_grp2 = ['object-group network ipv4 SOME_HOST2']
+    ip_grp2.append(' 10.0.0.0/8')
+    ip_grp2.append('exit')
+    port_grp1 = ['object-group port 80-80']
+    port_grp1.append(' eq 80')
+    port_grp1.append('exit')
+    port_grp2 = ['object-group port 1024-65535']
+    port_grp2.append(' range 1024 65535')
+    port_grp2.append('exit')
+
+    self.naming.GetNetAddr.side_effect = [
+        [nacaddr.IP('10.0.0.0/8', token='SOME_HOST')],
+        [nacaddr.IP('10.0.0.0/8', token='SOME_HOST2')],
+        [nacaddr.IP('10.0.0.0/8', token='SOME_HOST')],
+        [nacaddr.IP('10.0.0.0/8', token='SOME_HOST2')],
+    ]
+    self.naming.GetServiceByProto.return_value = ['80']
+
+    pol = policy.ParsePolicy(
+        GOOD_OBJGRP_DEDUP_HEADER + GOOD_TERM_2 + GOOD_TERM_2_DUPE, self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+
+    self.assertIn(
+        '\n'.join(ip_grp1), str(acl), '%s %s' % ('\n'.join(ip_grp1), str(acl))
+    )
+    self.assertNotIn(
+        '\n'.join(ip_grp2), str(acl), '%s %s' % ('\n'.join(ip_grp2), str(acl))
+    )
+    self.assertIn(
+        '\n'.join(port_grp1),
+        str(acl),
+        '%s %s' % ('\n'.join(port_grp1), str(acl)),
+    )
+    self.assertIn(
+        '\n'.join(port_grp2),
+        str(acl),
+        '%s %s' % ('\n'.join(port_grp2), str(acl)),
+    )
+
+    # Object-group terms should use the object groups created.
+    self.assertIn(
+        ' permit tcp any port-group 80-80 net-group SOME_HOST port-group'
+        ' 1024-65535',
+        str(acl),
+        str(acl),
+    )
+
+    # Object-group terms should use the first object group not duplicates.
+    self.assertNotIn(
+        ' permit tcp any port-group 80-80 net-group SOME_HOST2 port-group'
+        ' 1024-65535',
+        str(acl),
+        str(acl),
+    )
+
+    # There should be no addrgroups that look like IP addresses.
+    for addrgroup in re.findall(r'net-group ([a-f0-9.:/]+)', str(acl)):
+      self.assertRaises(ValueError, nacaddr.IP, addrgroup)
+
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('SOME_HOST'), mock.call('SOME_HOST2')]
+    )
+    self.naming.GetServiceByProto.assert_called_with('HTTP', 'tcp')
+
+  def testObjectGroupInet6(self):
+    ip_grp = ['object-group network ipv6 SOME_HOST']
+    ip_grp.append(' 2001::3/128')
+    ip_grp.append('exit')
+    port_grp1 = ['object-group port 80-80']
+    port_grp1.append(' eq 80')
+    port_grp1.append('exit')
+    port_grp2 = ['object-group port 1024-65535']
+    port_grp2.append(' range 1024 65535')
+    port_grp2.append('exit')
+
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IP('2001::3/128', token='SOME_HOST')
+    ]
+    self.naming.GetServiceByProto.return_value = ['80']
+
+    pol = policy.ParsePolicy(
+        GOOD_OBJGRP_HEADER_2 + GOOD_TERM_2 + GOOD_TERM_18, self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    self.assertIn(
+        '\n'.join(ip_grp), str(acl), '%s %s' % ('\n'.join(ip_grp), str(acl))
+    )
+    self.assertIn(
+        '\n'.join(port_grp1),
+        str(acl),
+        '%s %s' % ('\n'.join(port_grp1), str(acl)),
+    )
+    self.assertIn(
+        '\n'.join(port_grp2),
+        str(acl),
+        '%s %s' % ('\n'.join(port_grp2), str(acl)),
+    )
+
+    # Object-group terms should use the object groups created.
+    self.assertIn(
+        ' permit tcp any port-group 80-80 net-group SOME_HOST port-group'
+        ' 1024-65535',
+        str(acl),
+        str(acl),
+    )
+    self.assertIn(
+        ' permit ipv6 net-group SOME_HOST net-group SOME_HOST',
+        str(acl),
+        str(acl),
+    )
+
+    # There should be no addrgroups that look like IP addresses.
+    for addrgroup in re.findall(r'net-group ([a-f0-9.:/]+)', str(acl)):
+      self.assertRaises(ValueError, nacaddr.IP, addrgroup)
+
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('SOME_HOST'), mock.call('SOME_HOST')]
+    )
+    self.naming.GetServiceByProto.assert_called_once_with('HTTP', 'tcp')
+
+    # There should be no ipv4 addresses
+    self.naming.GetNetAddr.reset_mock()
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IP('192.168.0.1/32', token='SOME_HOST'),
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_OBJGRP_HEADER_2 + GOOD_TERM_2 + GOOD_TERM_18, self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    self.assertNotIn(
+        ' permit ip net-group SOME_HOST net-group SOME_HOST', str(acl)
+    )
+    self.naming.GetNetAddr.assert_has_calls(
+        [mock.call('SOME_HOST'), mock.call('SOME_HOST')]
+    )
+
+  def testInet6(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IP('10.0.0.0/8'),
+        nacaddr.IP('2001:4860:8000::/33'),
+    ]
+
+    acl = cisco.Cisco(
+        policy.ParsePolicy(GOOD_INET6_HEADER + GOOD_TERM_8, self.naming),
+        EXP_INFO,
+    )
     inet6_test1 = 'no ipv6 access-list inet6_acl'
     inet6_test2 = 'ipv6 access-list inet6_acl'
     inet6_test3 = 'permit tcp any 2001:4860:8000::/33'
@@ -686,6 +1005,17 @@ class CiscoTest(unittest.TestCase):
     self.assertIn(inet6_test5, aclout, '[%s]' % aclout)
     self.assertTrue(re.search(inet6_test6, aclout), aclout)
 
+    self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
+
+  def testRestrictAddressFamilyType(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IPv4('127.0.0.1'), nacaddr.IPv6('::1/128')]
+
+    acl = cisco.Cisco(policy.ParsePolicy(GOOD_MIXED_HEADER + GOOD_TERM_23,
+                                         self.naming), EXP_INFO)
+    output = str(acl)
+    self.assertIn('127.0.0.1', output, output)
+    self.assertNotIn('::1/128', output, output)
     self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
 
   def testDsmo(self):
@@ -790,7 +1120,8 @@ class CiscoTest(unittest.TestCase):
 
   @mock.patch.object(cisco.logging, 'info')
   def testExpiringTerm(self, mock_info):
-    exp_date = datetime.date.today() + datetime.timedelta(weeks=EXP_INFO)
+    current_date = datetime.datetime.now(datetime.timezone.utc).date()
+    exp_date = current_date + datetime.timedelta(weeks=EXP_INFO)
     _ = cisco.Cisco(policy.ParsePolicy(GOOD_HEADER + EXPIRING_TERM %
                                        exp_date.strftime('%Y-%m-%d'),
                                        self.naming), EXP_INFO)
@@ -878,7 +1209,6 @@ class CiscoTest(unittest.TestCase):
         LONG_VERSION_HEADER + GOOD_TERM_7,
         self.naming)
     acl = cisco.Cisco(pol, EXP_INFO)
-    print(acl)
     self.assertIn('remark This long header should be split even on a', str(acl))
     self.assertIn(('remark looooooooooooooooooooooooooonnnnnnnnnnnnnnnnnn'
                    'gggggggggg string.'), str(acl))
@@ -889,6 +1219,679 @@ class CiscoTest(unittest.TestCase):
     self.assertIn(('remark 5:0x169ef02a512c5b28!8m2!3d37.4220579!4d-122.084'
                    '0897'), str(acl))
 
+  def testIPIP(self):
+    self.naming.GetNetAddr.return_value = [nacaddr.IP('10.0.0.0/24')]
+    acl = cisco.Cisco(policy.ParsePolicy(GOOD_HEADER + GOOD_TERM_24,
+                                         self.naming), EXP_INFO)
+    self.assertIn('permit 4 ', str(acl))
+
+  def testConfigureReplaceCompatible(self):
+    self.naming.GetNetAddr.return_value = [nacaddr.IP('10.0.0.0/8'),
+                                           nacaddr.IP('2001:4860:8000::/33')]
+    pol = policy.ParsePolicy(
+        GOOD_CONFIGURE_REPLACE_COMPATIBLE_HEADER + GOOD_TERM_8,
+        self.naming)
+    acl = cisco.Cisco(pol, EXP_INFO)
+    inet6_test1 = 'no ip access-list extended configure_replace_compatible_acl'
+    inet6_test2 = 'ip access-list extended configure_replace_compatible_acl'
+    inet6_test3 = 'permit tcp any 10.0.0.0 0.255.255.255'
+    inet6_test4 = 'no ipv6 access-list ipv6-configure_replace_compatible_acl'
+    inet6_test5 = 'ipv6 access-list ipv6-configure_replace_compatible_acl'
+    inet6_test6 = 'permit tcp any 2001:4860:8000::/33'
+    aclout = str(acl)
+    self.assertNotIn(inet6_test1, aclout, '[%s]' % aclout)
+    self.assertIn(inet6_test2, aclout, '[%s]' % aclout)
+    self.assertTrue(re.search(inet6_test3, aclout), aclout)
+    self.assertNotIn(inet6_test4, aclout, '[%s]' % aclout)
+    self.assertIn(inet6_test5, aclout, '[%s]' % aclout)
+    self.assertTrue(re.search(inet6_test6, aclout), aclout)
+    self.naming.GetNetAddr.assert_called_once_with('SOME_HOST')
+
+  def testObjectGroupMismatch(self):
+    definitions = naming.Naming()
+    definitions._ParseLine('NET1 = 10.1.0.0/24', 'networks')
+    definitions._ParseLine('NET2 = 10.2.0.0/24', 'networks')
+    definitions._ParseLine('NET3 = 10.3.1.0/24', 'networks')
+    definitions._ParseLine('       10.3.2.0/24', 'networks')
+    definitions._ParseLine('NET4 = 2001:db8:0:aa::/64', 'networks')
+    definitions._ParseLine('       2001:db8:0:bb::/64', 'networks')
+    definitions._ParseLine('NET5 = NET3 NET4', 'networks')
+    definitions._ParseLine('NET6 = 4000::/2', 'networks')
+    definitions._ParseLine('NET7 = 8000::/1', 'networks')
+    test_policy = """
+    term rule-1 {
+      source-address:: NET1
+      destination-address:: NET2 NET3
+      action:: accept
+      protocol:: tcp
+    }
+    term rule-2 {
+      source-address:: NET6
+      destination-address:: NET7
+      action:: accept
+      protocol:: tcp
+    }
+    term rule-3 {
+      source-address:: NET3
+      destination-address:: NET4
+      action:: accept
+      protocol:: tcp
+    }
+    term rule-4 {
+      source-address:: NET4
+      destination-address:: NET3
+      action:: accept
+      protocol:: tcp
+    }
+    """
+    pol = policy.ParsePolicy(GOOD_OBJGRP_HEADER_1 + test_policy, definitions)
+    acl = cisco.Cisco(pol, EXP_INFO)
+    acl_text = str(acl)
+    self.assertIn('10.1.0.0', acl_text)
+    self.assertIn('NET1', acl_text)
+    self.assertIn('permit tcp net-group NET1', acl_text)
+    self.assertNotIn('4000::', acl_text)
+    self.assertNotIn('NET4', acl_text)
+    pol = policy.ParsePolicy(GOOD_OBJGRP_HEADER_2 + test_policy, definitions)
+    acl = cisco.Cisco(pol, EXP_INFO)
+    acl_text = str(acl)
+    self.assertNotIn('10.1.0.0', acl_text)
+    self.assertNotIn('NET1', acl_text)
+    self.assertIn('permit tcp net-group NET6', acl_text)
+    self.assertIn('4000::', acl_text)
+    self.assertNotIn('NET4', acl_text)
+
+  def testSequenceNumbersMixed(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IP('10.0.0.0/8'),
+        nacaddr.IP('192.168.0.0/16'),
+        nacaddr.IP('2001:4860:8000::/48'),
+        nacaddr.IP('2001:4860:8002::/48'),
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_ENABLE_SEQUENCE_NUMBERS_HEADER_MIXED
+        + GOOD_TERM_1
+        + GOOD_TERM_8
+        + GOOD_TERM_11,
+        self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        no ip access-list extended enable_sequence_numbers_acl
+        ip access-list extended enable_sequence_numbers_acl
+         10 remark $Id:$
+         20 remark this is an enable_sequence_numbers test acl
+
+
+         30 remark good-term-1
+         40 permit icmp any any
+
+
+         50 remark good-term
+         60 permit tcp any 10.0.0.0 0.255.255.255
+         70 permit tcp any 192.168.0.0 0.0.255.255
+
+        exit
+
+        no ipv6 access-list ipv6-enable_sequence_numbers_acl
+        ipv6 access-list ipv6-enable_sequence_numbers_acl
+         sequence 10 remark $Id:$
+         sequence 20 remark this is an enable_sequence_numbers test acl
+
+
+         sequence 30 remark good-term
+         sequence 40 permit tcp any 2001:4860:8000::/48
+         sequence 50 permit tcp any 2001:4860:8002::/48
+
+
+         sequence 60 remark good-term-11
+         sequence 70 permit 58 any any 1
+         sequence 80 permit 58 any any 3
+         sequence 90 permit 58 any any 129
+
+        exit
+        """),
+        aclout,
+        '[%s]' % aclout,
+        )
+
+  def testSequenceNumbersStandard(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IP('10.0.0.0/8'),
+        nacaddr.IP('192.168.0.0/16'),
+        nacaddr.IP('2001:4860:8000::/48'),
+        nacaddr.IP('2001:4860:8002::/48'),
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_ENABLE_SEQUENCE_NUMBERS_HEADER_STANDARD
+        + GOOD_STANDARD_TERM_1
+        + GOOD_STANDARD_TERM_2,
+        self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        no ip access-list standard enable_sequence_numbers_acl
+        ip access-list standard enable_sequence_numbers_acl
+         10 remark $Id:$
+         20 remark this is an enable_sequence_numbers test acl
+         30 remark standard-term-1
+         40 permit 10.0.0.0 0.255.255.255
+         50 permit 192.168.0.0 0.0.255.255
+         60 remark standard-term-2
+         70 permit 10.0.0.0 0.255.255.255
+         80 permit 192.168.0.0 0.0.255.255
+
+        exit
+        """),
+        aclout,
+        '[%s]' % aclout,
+        )
+
+  def testLastNewLine(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IP('10.0.0.0/8'),
+        nacaddr.IP('2001:4860:8000::/48'),
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_CONFIGURE_REPLACE_COMPATIBLE_HEADER
+        + GOOD_TERM_1
+        + GOOD_TERM_11,
+        self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+         remark good-term-1
+         permit icmp any any
+
+
+        ipv6 access-list ipv6-configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+         remark good-term-11
+         permit icmp any any unreachable
+         permit icmp any any time-exceeded
+         permit icmp any any echo-reply
+
+        """),
+        aclout,
+        f'[{aclout}]',
+        )
+
+  def testUpperCaseIPv6(self):
+    self.naming.GetNetAddr.return_value = [
+        nacaddr.IP('2001:4860:abcd::/48'),
+        nacaddr.IP('2001:4860:efab::/48'),
+        nacaddr.IP('2001:4860:8000:abcd::1/128'),
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_CONFIGURE_REPLACE_COMPATIBLE_HEADER
+        + GOOD_TERM_8,
+        self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+        ipv6 access-list ipv6-configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+         remark good-term
+         permit tcp any host 2001:4860:8000:ABCD::1
+         permit tcp any 2001:4860:ABCD::/48
+         permit tcp any 2001:4860:EFAB::/48
+
+         """),
+        aclout,
+        f'[{aclout}]',
+        )
+
+  def testProtocolNames(self):
+    pol = policy.ParsePolicy(
+        GOOD_CONFIGURE_REPLACE_COMPATIBLE_HEADER
+        + GOOD_TERM_25_PROTOCOLS_IPV4
+        + GOOD_TERM_26_PROTOCOLS_IPV6,
+        self.naming
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+         remark good_term_25
+         permit ahp any any
+         permit esp any any
+         permit eigrp any any
+         permit 3 any any
+         permit gre any any
+         permit icmp any any
+         permit igmp any any
+         permit pcp any any
+         permit nos any any
+         permit ospf any any
+         permit pim any any
+         permit tcp any any
+         permit udp any any
+
+
+        ipv6 access-list ipv6-configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+         remark good_term_26
+         permit ahp any any
+         permit esp any any
+         permit 3 any any
+         permit hbh any any
+         permit icmp any any
+         permit pcp any any
+         permit 89 any any
+         permit sctp any any
+         permit tcp any any
+         permit udp any any
+
+         """),
+        aclout,
+        f'[{aclout}]',
+    )
+
+  def testPortNamesTCP(self):
+    self.naming.GetServiceByProto.return_value = [
+        '1',  # A port name without a name.
+        '7',
+        '9',
+        '13',
+        '19',
+        '20',
+        '23',
+        '25',
+        '43',
+        '49',
+        '53',
+        '70',
+        '79',
+        '80',
+        '101',
+        '109',
+        '110',
+        '113',
+        '119',
+        '135',
+        '179',
+        '194',
+        '496',
+        '512',
+        '513',
+        '515',
+        '517',
+        '540',
+        '543',
+        '544',
+        '15001',
+        '15002',
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_PORT_NAMES_HEADER + GOOD_TERM_27_TCP_PORTS,
+        self.naming,
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended port_names_acl
+         remark $Id:$
+         remark this is a port_names test acl
+
+
+         remark good_term_27
+         permit tcp any any eq 1
+         permit tcp any any eq echo
+         permit tcp any any eq discard
+         permit tcp any any eq daytime
+         permit tcp any any eq chargen
+         permit tcp any any eq ftp-data
+         permit tcp any any eq telnet
+         permit tcp any any eq smtp
+         permit tcp any any eq whois
+         permit tcp any any eq tacacs
+         permit tcp any any eq domain
+         permit tcp any any eq gopher
+         permit tcp any any eq finger
+         permit tcp any any eq www
+         permit tcp any any eq hostname
+         permit tcp any any eq pop2
+         permit tcp any any eq pop3
+         permit tcp any any eq ident
+         permit tcp any any eq nntp
+         permit tcp any any eq msrpc
+         permit tcp any any eq bgp
+         permit tcp any any eq irc
+         permit tcp any any eq pim-auto-rp
+         permit tcp any any eq exec
+         permit tcp any any eq login
+         permit tcp any any eq lpd
+         permit tcp any any eq talk
+         permit tcp any any eq uucp
+         permit tcp any any eq klogin
+         permit tcp any any eq kshell
+         permit tcp any any eq onep-plain
+         permit tcp any any eq onep-tls
+
+         """),
+        aclout,
+        f'[{aclout}]',
+        )
+
+    # The rest of the ports that would have created range statements
+    # if included in the previous list.
+    self.naming.GetServiceByProto.return_value = [
+        '21',
+        '111',
+        '514',
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_PORT_NAMES_HEADER + GOOD_TERM_27_TCP_PORTS,
+        self.naming,
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended port_names_acl
+         remark $Id:$
+         remark this is a port_names test acl
+
+
+         remark good_term_27
+         permit tcp any any eq ftp
+         permit tcp any any eq sunrpc
+         permit tcp any any eq cmd
+
+         """),
+        aclout,
+        f'[{aclout}]',
+        )
+
+  def testPortNamesUDP(self):
+    self.naming.GetServiceByProto.return_value = [
+        '1',
+        '7',
+        '9',
+        '37',
+        '42',
+        '49',
+        '53',
+        '67',
+        '68',
+        '111',
+        '123',
+        '137',
+        '138',
+        '161',
+        '162',
+        '177',
+        '195',
+        '434',
+        '496',
+        '500',
+        '512',
+        '513',
+        '517',
+        '520',
+        '521',
+        '4500',
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_PORT_NAMES_HEADER + GOOD_TERM_28_UDP_PORTS,
+        self.naming,
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended port_names_acl
+         remark $Id:$
+         remark this is a port_names test acl
+
+
+         remark good_term_28
+         permit udp any any eq 1
+         permit udp any any eq echo
+         permit udp any any eq discard
+         permit udp any any eq time
+         permit udp any any eq nameserver
+         permit udp any any eq tacacs
+         permit udp any any eq domain
+         permit udp any any eq bootps
+         permit udp any any eq bootpc
+         permit udp any any eq sunrpc
+         permit udp any any eq ntp
+         permit udp any any eq netbios-ns
+         permit udp any any eq netbios-dgm
+         permit udp any any eq snmp
+         permit udp any any eq snmptrap
+         permit udp any any eq xdmcp
+         permit udp any any eq dnsix
+         permit udp any any eq mobile-ip
+         permit udp any any eq pim-auto-rp
+         permit udp any any eq isakmp
+         permit udp any any eq biff
+         permit udp any any eq who
+         permit udp any any eq talk
+         permit udp any any eq rip
+         permit udp any any eq ripv6
+         permit udp any any eq non500-isakmp
+
+         """),
+        aclout,
+        f'[{aclout}]',
+        )
+
+    # The rest of the ports that would have created range statements
+    # if included in the previous list.
+    self.naming.GetServiceByProto.return_value = [
+        '69',
+        '139',
+        '514',
+    ]
+    pol = policy.ParsePolicy(
+        GOOD_PORT_NAMES_HEADER + GOOD_TERM_28_UDP_PORTS,
+        self.naming,
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended port_names_acl
+         remark $Id:$
+         remark this is a port_names test acl
+
+
+         remark good_term_28
+         permit udp any any eq tftp
+         permit udp any any eq netbios-ss
+         permit udp any any eq syslog
+
+         """),
+        aclout,
+        f'[{aclout}]',
+        )
+
+  def testIcmpTypeCodeNames(self):
+    pol = policy.ParsePolicy(
+        GOOD_CONFIGURE_REPLACE_COMPATIBLE_HEADER
+        + GOOD_TERM_29_ICMP_IPV4
+        + GOOD_TERM_30_ICMP_IPV6,
+        self.naming,
+    )
+    acl = cisco.Cisco(pol, EXP_INFO)
+    aclout = str(acl)
+    self.assertMultiLineEqual(
+        textwrap.dedent("""\
+        ! $Id:$
+        ! $Date:$
+        ! $Revision:$
+        ip access-list extended configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+         remark good_term_icmp_types
+         permit icmp any any echo-reply
+         permit icmp any any unreachable
+         permit icmp any any source-quench
+         permit icmp any any redirect
+         permit icmp any any alternate-address
+         permit icmp any any echo
+         permit icmp any any router-advertisement
+         permit icmp any any router-solicitation
+         permit icmp any any time-exceeded
+         permit icmp any any parameter-problem
+         permit icmp any any timestamp-request
+         permit icmp any any timestamp-reply
+         permit icmp any any information-request
+         permit icmp any any information-reply
+         permit icmp any any mask-request
+         permit icmp any any mask-reply
+         permit icmp any any traceroute
+         permit icmp any any conversion-error
+         permit icmp any any mobile-redirect
+
+
+         remark good_term_unreachable_codes
+         permit icmp any any net-unreachable
+         permit icmp any any host-unreachable
+         permit icmp any any protocol-unreachable
+         permit icmp any any port-unreachable
+         permit icmp any any packet-too-big
+         permit icmp any any source-route-failed
+         permit icmp any any network-unknown
+         permit icmp any any host-unknown
+         permit icmp any any host-isolated
+         permit icmp any any dod-net-prohibited
+         permit icmp any any dod-host-prohibited
+         permit icmp any any net-tos-unreachable
+         permit icmp any any host-tos-unreachable
+         permit icmp any any administratively-prohibited
+         permit icmp any any host-precedence-unreachable
+         permit icmp any any precedence-unreachable
+
+
+         remark good_term_redirect_codes
+         permit icmp any any net-redirect
+         permit icmp any any host-redirect
+         permit icmp any any net-tos-redirect
+         permit icmp any any host-tos-redirect
+
+
+         remark good_term_time-exceeded_codes
+         permit icmp any any ttl-exceeded
+         permit icmp any any reassembly-timeout
+
+
+         remark good_term_parameter-problem_codes
+         permit icmp any any general-parameter-problem
+         permit icmp any any option-missing
+         permit icmp any any no-room-for-option
+
+
+         remark good_term_router-advertisement_codes
+         permit icmp any any 9 0
+         permit icmp any any 9 16
+
+
+        ipv6 access-list ipv6-configure_replace_compatible_acl
+         remark $Id:$
+         remark this is a configure_replace_compatible test acl
+
+
+         remark good_term_30
+         permit icmp any any unreachable
+         permit icmp any any packet-too-big
+         permit icmp any any time-exceeded
+         permit icmp any any parameter-problem
+         permit icmp any any echo-request
+         permit icmp any any echo-reply
+         permit icmp any any mld-query
+         permit icmp any any mld-report
+         permit icmp any any mld-reduction
+         permit icmp any any router-solicitation
+         permit icmp any any router-advertisement
+         permit icmp any any nd-ns
+         permit icmp any any nd-na
+         permit icmp any any redirect
+         permit icmp any any router-renumbering
+         permit icmp any any 139
+         permit icmp any any 140
+         permit icmp any any 141
+         permit icmp any any 142
+         permit icmp any any mld-v2-report
+         permit icmp any any dhaad-request
+         permit icmp any any dhaad-reply
+         permit icmp any any mpd-solicitation
+         permit icmp any any mpd-advertisement
+         permit icmp any any 148
+         permit icmp any any 149
+         permit icmp any any 151
+         permit icmp any any 152
+         permit icmp any any 153
+
+         """),
+        aclout,
+        f'[{aclout}]',
+        )
+
 
 if __name__ == '__main__':
-  unittest.main()
+  absltest.main()

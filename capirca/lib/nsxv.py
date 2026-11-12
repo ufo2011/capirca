@@ -15,11 +15,6 @@
 
 """Nsxv generator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import re
 import xml
@@ -28,8 +23,6 @@ from absl import logging
 from capirca.lib import aclgenerator
 from capirca.lib import nacaddr
 import six
-from six.moves import map
-from six.moves import range
 
 
 _ACTION_TABLE = {
@@ -79,7 +72,6 @@ _NSXV_SUPPORTED_KEYWORDS = [
     'destination_address',
     'destination_address_exclude',
     'destination_port',
-    'expiration',
     'icmp_type',
     'protocol',
     'source_address',
@@ -351,7 +343,7 @@ class Term(aclgenerator.Term):
           services.append(self._ServiceToString(proto,
                                                 source_port,
                                                 destination_port,
-                                                icmp_types))
+                                                icmp_types))  # pyrefly: ignore[unbound-name]
       services.append('</services>')
 
     service = ''
@@ -476,7 +468,7 @@ class Nsxv(aclgenerator.ACLGenerator):
     Returns:
       tuple containing both supported tokens and sub tokens
     """
-    supported_tokens, supported_sub_tokens = super(Nsxv, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
     supported_tokens |= {'logging'}
     supported_sub_tokens.update({'action': {'accept', 'deny', 'reject',
@@ -494,8 +486,12 @@ class Nsxv(aclgenerator.ACLGenerator):
         continue
 
       filter_options = header.FilterOptions(self._PLATFORM)
-      if len(filter_options) >= 2:
-        filter_name = filter_options[1]
+      filter_name = f'<{str(header)}>'  # Default name.
+      if filter_options:
+        # filter_options[0]: policy name
+        # filter_options[1]: type (inet, inet6, mixed)
+        # Used in some of the warnings below.
+        filter_name = filter_options[0]
 
       # get filter type, section id and applied To
       self._ParseFilterOptions(filter_options)
@@ -654,4 +650,4 @@ class Nsxv(aclgenerator.ACLGenerator):
 
       target_as_xml = xml.dom.minidom.parseString(''.join(target))
     # TODO(robankeny) utf encoding with refactoring after migration to py3
-    return target_as_xml.toprettyxml(indent='  ')
+    return target_as_xml.toprettyxml(indent='  ')  # pyrefly: ignore[unbound-name]

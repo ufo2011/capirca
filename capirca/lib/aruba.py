@@ -15,11 +15,6 @@
 
 """Aruba generator."""
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 import datetime
 import logging
 
@@ -71,7 +66,7 @@ class Term(aclgenerator.Term):
   }
 
   def __init__(self, term, filter_type, verbose=True):
-    super(Term, self).__init__(term)
+    super().__init__(term)
     self.term = term
     self.filter_type = filter_type
     self.netdestinations = []
@@ -158,7 +153,7 @@ class Term(aclgenerator.Term):
       str_tok.append(dst_addr_token)
 
       str_tok.append(dst_port)
-      str_tok.append(self._ACTIONS.get(self.term.action[0]))
+      str_tok.append(self._ACTIONS.get(self.term.action[0]))  # pyrefly: ignore[bad-argument-type]
       ret_str.append(' '.join(t for t in str_tok if t))
 
     self.netdestinations = netdestinations
@@ -255,7 +250,7 @@ class Aruba(aclgenerator.ACLGenerator):
     Returns:
       Tuple containing both supported tokens and sub tokens.
     """
-    supported_tokens, supported_sub_tokens = super(Aruba, self)._BuildTokens()
+    supported_tokens, supported_sub_tokens = super()._BuildTokens()
 
     supported_tokens -= {
         'destination_address_exclude',

@@ -21,17 +21,11 @@ inline comments but preservers line-level comments. Fields expected to have
 "naming" values are stored as a set without order or line breaks retained.
 """
 
-from __future__ import absolute_import
-from __future__ import division
-from __future__ import print_function
-from __future__ import unicode_literals
-
 from absl import logging
 import six
-from six.moves import zip
 
 
-class Field(object):
+class Field:
   """A name-value assignment within a block."""
 
   def __init__(self, value):
@@ -40,7 +34,7 @@ class Field(object):
   def __str__(self):
     t = type(self)
     f = 'UNKNOWN'
-    for k, v in six.iteritems(field_map):
+    for k, v in field_map.items():
       if t == v:
         f = k
         break
@@ -65,7 +59,7 @@ class Field(object):
 class IntegerField(Field):
 
   def __init__(self, value):
-    super(IntegerField, self).__init__(value)
+    super().__init__(value)
     try:
       _ = int(value)
     except ValueError:
@@ -76,7 +70,7 @@ class NamingField(Field):
   """A naming field is one that refers to names in used in naming.py."""
 
   def __init__(self, value):
-    super(NamingField, self).__init__(value)
+    super().__init__(value)
     self.value = self.ParseString(value)
 
   def ParseString(self, value):
@@ -148,6 +142,10 @@ class Encapsulate(Field):
   """An encapsulate field."""
 
 
+class Decapsulate(Field):
+  """An decapsulate field."""
+
+
 class DestinationAddress(Address):
   """A destination-address field."""
 
@@ -172,9 +170,15 @@ class DestinationPrefixExcept(Field):
   """A destination-prefix-except field."""
 
 
+class DestinationSelf(Field):
+  """A destination-self field."""
+
+
 class DestinationTag(Field):
   """A destination tag field."""
 
+class DestinationZone(Field):
+  """A destination-zone field."""
 
 class DscpMatch(Field):
   """A dscp-match field."""
@@ -232,6 +236,14 @@ class NextIP(Field):
   """An owner field."""
 
 
+class NextHopGroup(Field):
+  """A next-hop-group field."""
+
+
+class NextInterface(Field):
+  """A next-interface field."""
+
+
 class PacketLength(Field):
   """A packet-length field."""
 
@@ -246,6 +258,22 @@ class PlatformExclude(Field):
 
 class Policer(Field):
   """A rate-limit-icmp field."""
+
+
+class PoliceKbps(Field):
+  """A police-kbps field."""
+
+
+class PoliceBurst(Field):
+  """A police-burst field."""
+
+
+class PolicePps(Field):
+  """A police-pps field."""
+
+
+class PortMirror(Field):
+  """A port-mirror field."""
 
 
 class Precedence(Field):
@@ -299,6 +327,8 @@ class SourcePrefixExcept(Field):
 class SourceTag(Field):
   """A source tag field."""
 
+class SourceZone(Field):
+  """A source-zone field."""
 
 class Target(Field):
   """A target field."""
@@ -319,10 +349,14 @@ class TrafficClassCount(Field):
 class Verbatim(Field):
   """A verbatim field."""
 
+class VersaApplication(Field):
+  """A VersaApplication field."""
 
 class Vpn(Field):
   """A vpn field."""
 
+class ApplicationID(Field):
+  """A application id field."""
 
 destination_address_fields = (DestinationAddress, DestinationExclude,
                               DestinationPrefix)
@@ -338,7 +372,9 @@ field_map = {
     'destination-port': DestinationPort,
     'destination-prefix': DestinationPrefix,
     'destination-prefix-except': DestinationPrefixExcept,
+    'destination-self': DestinationSelf,
     'destination-tag': DestinationTag,
+    'destination-zone': DestinationZone,
     'dscp-match': DscpMatch,
     'dscp-set': DscpSet,
     'ether-type': EtherType,
@@ -353,11 +389,17 @@ field_map = {
     'option': Option,
     'owner': Owner,
     'next-ip': NextIP,
+    'next-hop-group': NextHopGroup,
+    'next-interface': NextInterface,
     'packet-length': PacketLength,
     'platform': Platform,
     'platform-exclude': PlatformExclude,
     'policer': Policer,
+    'police-kbps': PoliceKbps,
+    'police-burst': PoliceBurst,
+    'police-pps': PolicePps,
     'port': Port,
+    'port-mirror': PortMirror,
     'precedence': Precedence,
     'protocol': Protocol,
     'protocol-except': ProtocolExcept,
@@ -371,17 +413,21 @@ field_map = {
     'source-prefix': SourcePrefix,
     'source-prefix-except': SourcePrefixExcept,
     'source-tag': SourceTag,
+    'source-zone': SourceZone,
     'target': Target,
     'timeout': Timeout,
     'traffic-class-count': TrafficClassCount,
     'traffic-type': TrafficType,
     'verbatim': Verbatim,
+    'versa-application': VersaApplication,
     'vpn': Vpn,
     'encapsulate': Encapsulate,
+    'decapsulate': Decapsulate,
+    'application-id': ApplicationID,
 }
 
 
-class Block(object):
+class Block:
   """A section containing fields."""
 
   def __init__(self):
@@ -452,14 +498,14 @@ class Term(Block):
   """A policy term."""
 
   def __init__(self, name):
-    super(Term, self).__init__()
+    super().__init__()
     self.name = name
 
   def Name(self):
     return self.name
 
   def __eq__(self, o):
-    if not super(Term, self).__eq__(o):
+    if not super().__eq__(o):
       return False
     return self.name == o.name
 
@@ -563,7 +609,7 @@ class Term(Block):
     return ' '.join(pieces)
 
 
-class BlankLine(object):
+class BlankLine:
   """A blank line."""
 
   def __str__(self):
@@ -576,7 +622,7 @@ class BlankLine(object):
     return not self == o
 
 
-class CommentLine(object):
+class CommentLine:
   """A comment in the file."""
 
   def __init__(self, data):
@@ -594,7 +640,7 @@ class CommentLine(object):
     return not self == o
 
 
-class Include(object):
+class Include:
   """A reference to another policy definition."""
 
   def __init__(self, identifier):
@@ -612,7 +658,7 @@ class Include(object):
     return not self == o
 
 
-class Policy(object):
+class Policy:
   """An ordered list of headers, terms, comments, blank lines and includes."""
 
   def __init__(self, identifier):
@@ -650,7 +696,7 @@ class Policy(object):
         yield match_idx, field_idx, f
 
 
-class PolicyParser(object):
+class PolicyParser:
   """Parse a policy object from a data buffer."""
 
   def __init__(self, data, identifier):
@@ -676,7 +722,7 @@ class PolicyParser(object):
   def ParseTopLevel(self, line):
     """Parse a line not nested within a block."""
     if line == '':  # pylint: disable=g-explicit-bool-comparison
-      self.policy.AddMember(BlankLine())
+      self.policy.AddMember(BlankLine())  # pyrefly: ignore[missing-attribute]
       return
     if line.startswith('#'):
       if line.startswith('#include '):
@@ -696,7 +742,7 @@ class PolicyParser(object):
     """Parse a line with a line level comment."""
     if self.block_in_progress:
       raise ValueError('Found comment line in block: %s' % line)
-    self.policy.AddMember(CommentLine(line))
+    self.policy.AddMember(CommentLine(line))  # pyrefly: ignore[missing-attribute]
 
   def ParseIncludeLine(self, line):
     """Parse an #include line refering to another file."""
@@ -708,7 +754,7 @@ class PolicyParser(object):
     inc_ref = line_parts[1]
     if '#' in inc_ref:
       inc_ref, _ = inc_ref.split('#', 1)
-    self.policy.AddMember(Include(inc_ref))
+    self.policy.AddMember(Include(inc_ref))  # pyrefly: ignore[missing-attribute]
 
   def ParseHeaderLine(self, line):
     """Parse a line beginning a header block."""
@@ -740,7 +786,7 @@ class PolicyParser(object):
       self.ParseField(line)
       return
     if line.startswith('}'):
-      self.policy.AddMember(self.block_in_progress)
+      self.policy.AddMember(self.block_in_progress)  # pyrefly: ignore[missing-attribute]
       self.block_in_progress = None
       return
     if self.block_in_progress is not None:
@@ -753,4 +799,4 @@ class PolicyParser(object):
     f_type = field_map.get(name)
     if not f_type:
       raise ValueError('Invalid field line: %s' % line)
-    self.block_in_progress.AddField(f_type(value))
+    self.block_in_progress.AddField(f_type(value))  # pyrefly: ignore[missing-attribute]
